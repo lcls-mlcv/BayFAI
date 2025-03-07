@@ -200,10 +200,6 @@ At this point, this is what the Workflow Definition Panel should look like:
 3. Go to the Workflow Control Panel:
     - Trigger BayFAI for the desired run!
 
-| ![BayFAI workflow controls from the eLog](images/bayfai-controls.png) | 
-|:---------------------------------------------------------------------:| 
-|      __BayFAI workflow controls from the eLog for mfxl1047723.__      |
-
 4. Monitor the Results (after a couple of minutes!):
     - Geometry is posted to the eLog along with the Resolution range covered by the detector (beam center is defined relative to the center of the powder image (in pixels)).
     - Fitting plots along with BayFAI metrics can be found in the "Summaries" page (go to ***Geometry_Fit > r0018*** where 18 is the run number).
