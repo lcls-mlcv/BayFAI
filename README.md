@@ -14,12 +14,12 @@
 BayFAI is run within the newer version of `btx`, `lute` standing for LCLS Unified Task Executor. This next iteration of `btx` is still in development.
 Due to its recent implement, BayFAI has not yet been merged in the main branch of `lute`.
 
-A stable and up to date version with BayFAI can be found at `/sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/lute`.
+A stable and up to date version with BayFAI can be found at [lute](https://github.com/LouConreux/lute).
 
 ### Preliminaries `smalldata`
 
 BayFAI needs a powder image to perform the calibration. `smalldata` does it for us.
-A stable and up to date version working with BayFAI can be found at `/sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/smalldata_tools`.
+A stable and up to date version working with BayFAI can be found at [smalldata](https://github.com/slac-lcls/smalldata_tools).
 
 ### Experiment Configuration
 
@@ -39,7 +39,17 @@ Each experiment requires a customized YAML configuration file.
     (base) [lconreux@sdfiana002 bayfai] mkdir smd_output
     ```
 
-3. Fetch a config yaml:
+3. Clone the BayFAI lute repository:
+   ```bash
+    (base) [lconreux@sdfiana002 bayfai] git clone https://github.com/LouConreux/lute.git
+    ```
+
+4. Set up Permissions:
+   ```bash
+    (base) [lconreux@sdfiana002 bayfai] chmod -R a+rx /sdf/data/lcls/ds/mfx/mfxl1047723/scratch/bayfai
+    ```
+   
+5. Fetch a config yaml:
     A template config yaml can be found at : `/sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/yamls/config.yaml`.
     Copy this config yaml to the scratch folder with appropriate experiment tag:
     ```bash
@@ -50,6 +60,8 @@ Each experiment requires a customized YAML configuration file.
     (base) [lconreux@sdfiana002 bayfai]$ tree
     .
     ├── launchpad
+    ├── lute
+    │   └── lute repository with BayFAI
     ├── smd_output
     └── yamls
         └── <experiment>.yaml
@@ -102,8 +114,8 @@ Each experiment requires a customized YAML configuration file.
     detnames:
     - <detector> # Fill this line with detector name (epix10k2M, jungfrau4M, Rayonix...)
     directory: /sdf/data/lcls/ds/<hutch>/<experiment>/scratch/bayfai/smd_output/ # Fill this line 
-    producer: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/smalldata_tools/lcls1_producers/smd_producer.py
-    # If no smalldata cloned in experiment folder, use this one!
+    #producer: /sdf/data/lcls/ds/<hutch>/<experiment>/results/smalldata_tools/lcls1_producers/smd_producer.py # Uncomment that line if SMD already set up in results and comment the next one
+    producer: /sdf/data/lcls/ds/<hutch>/<experiment>/scratch/bayfai/smalldata_tools/lcls1_producers/smd_producer.py # lute will clone SMD at working directory if no SMD found
     ...
     ```
     BayFAI's config template is divided into three parts, the `lute_config`: basic experiment configuration (top top of the yaml), `OptimizePyFAIGeometry`: BayFAI required parameters, `SMDSubmit`: smalldata required parameters
@@ -116,7 +128,7 @@ Each experiment requires a customized YAML configuration file.
       - Fill in the detector type name, as it is defined in the psana environment (epix10k2M, jungfrau4M, Rayonix, Epix10kaQuad...).
     3. `SubmitSMD`:
       - Fill the output directory for smalldata.
-      - Don't touch the producer if no smalldata repo was cloned in your experiment (I'd recommend even to never touch it!).
+      - Fill out the smalldata producer python file path. If you don't have smalldata set up for your experiment, no worries, lute will clone it for you!
 
 ## Running BayFAI from the Command-Line
 
@@ -137,7 +149,7 @@ After setting correctly the config yaml, one can launch BayFAI workflow from the
 
 3. Launch BayFAI workflow
     ```bash
-    (base) [lconreux@sdfiana002 launchpad] /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/lute/launch_scripts/submit_launch_airflow.sh /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/lute/launch_scripts/launch_airflow.py -w bayfai -c /sdf/data/lcls/ds/<hutch>/<experiment>/scratch/bayfai/yamls/<experiment>.yaml --partition=milano --ntasks=102 --account=lcls:<experiment> --nodes=1 --test
+    (base) [lconreux@sdfiana002 launchpad] /sdf/data/lcls/ds/<hutch>/<experiment>/scratch/bayfai/lute/launch_scripts/submit_launch_airflow.sh /sdf/data/lcls/ds/<hutch>/<experiment>/scratch/bayfai/lute/launch_scripts/launch_airflow.py -w bayfai -c /sdf/data/lcls/ds/<hutch>/<experiment>/scratch/bayfai/yamls/<experiment>.yaml --partition=milano --ntasks=102 --account=lcls:<experiment> --nodes=1 --test
     ```
     This will launch the BayFAI workflow using the config yaml one specified earlier, and will scan 101 distances around the provided <guess distance>.
 
@@ -159,13 +171,15 @@ After setting correctly the config yaml, one can launch BayFAI workflow from the
     ```bash
     (base) [lconreux@sdfiana002 bayfai]$ tree
     .
-    ├── launchpad
-    │   └── slurm-<job-id>.out
-    ├── smd_output
-    │   └── <experiment>_Run<run:0>4>.h5
     ├── figs
     │    └── bayFAI_<experiment>_r<run:0>4>.png
-    ├── lute.db
+    ├── launchpad
+    │   └── slurm-<job-id>.out
+    ├── lute
+    │   └── lute repository with BayFAI
+    ├── lute.db # lute database created to communicate between SmallData Task and BayFAI
+    ├── smd_output
+    │   └── <experiment>_Run<run:0>4>.h5
     └── yamls
         └── <experiment>.yaml
     ```
@@ -178,8 +192,8 @@ After setting correctly the config yaml, one can launch BayFAI workflow from the
         - Name: BayFAI
         - Trigger: Manually triggered
         - Location: S3DF
-        - Executable: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/lute/launch_scripts/submit_launch_airflow.sh
-        - Parameters: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/lute/launch_scripts/launch_airflow.py -w bayfai -c /sdf/data/lcls/ds/<hutch>/<experiment>/scratch/bayfai/yamls/<experiment>.yaml --partition=milano --ntasks=102 --account=lcls:<experiment> --nodes=1 --test
+        - Executable: /sdf/data/lcls/ds/hutch/experiment/scratch/bayfai/lute/launch_scripts/submit_launch_airflow.sh
+        - Parameters: /sdf/data/lcls/ds/hutch/experiment/scratch/bayfai/lute/launch_scripts/launch_airflow.py -w bayfai -c /sdf/data/lcls/ds/hutch/experiment/scratch/bayfai/yamls/<experiment>.yaml --partition=milano --ntasks=102 --account=lcls:experiment --nodes=1 --test
 
 | ![BayFAI workflow configuration from the eLog](images/bayfai-config.png) | 
 |:------------------------------------------------------------------------:| 
