@@ -53,7 +53,7 @@ Each experiment requires a customized YAML configuration file.
     A template config yaml can be found at : `/sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/yamls/config.yaml`.
     Copy this config yaml to the scratch folder with appropriate experiment tag:
     ```bash
-    (base) [lconreux@sdfiana002 bayfai] cp /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/yamls/config.yaml yamls/<experiment>.yaml
+    (base) [lconreux@sdfiana002 bayfai] cp /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/yamls/config.yaml yamls/<experiment>.yaml
     ```
     At this point, the working directory should look like this: 
     ```bash
