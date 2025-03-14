@@ -46,7 +46,7 @@ Each experiment requires a customized YAML configuration file.
 
 4. Set up Permissions:
    ```bash
-    (base) [lconreux@sdfiana002 bayfai] chmod -R a+rx /sdf/data/lcls/ds/mfx/mfxl1047723/scratch/bayfai
+    (base) [lconreux@sdfiana002 bayfai] chmod -R a+rx /sdf/data/lcls/ds/<hutch>/<experiment>/scratch/bayfai
     ```
    
 5. Fetch a config yaml:
