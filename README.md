@@ -27,13 +27,13 @@ Each experiment requires a customized YAML configuration file.
 
 1. Navigate to the experiment scratch folder and create a working directory:
     ```bash
-    (base) [lconreux@sdfiana002 ~] cd /sdf/data/lcls/ds/<hutch>/<experiment>/scratch/
-    (base) [lconreux@sdfiana002 scratch] mkdir bayfai
+    (base) [lconreux@sdfiana002 ~] cd /sdf/data/lcls/ds/<hutch>/<experiment>/results/
+    (base) [lconreux@sdfiana002 results] mkdir bayfai
     ```
 
 2. Navigate to the lute working directory and create useful subfolders:
     ```bash
-    (base) [lconreux@sdfiana002 scratch] cd bayfai
+    (base) [lconreux@sdfiana002 results] cd bayfai
     (base) [lconreux@sdfiana002 bayfai] mkdir yamls
     (base) [lconreux@sdfiana002 bayfai] mkdir launchpad
     (base) [lconreux@sdfiana002 bayfai] mkdir smd_output
@@ -46,7 +46,7 @@ Each experiment requires a customized YAML configuration file.
 
 4. Set up Permissions:
    ```bash
-    (base) [lconreux@sdfiana002 bayfai] chmod -R a+rx /sdf/data/lcls/ds/<hutch>/<experiment>/scratch/bayfai
+    (base) [lconreux@sdfiana002 bayfai] chmod -R a+rx /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai
     ```
    
 5. Fetch a config yaml:
@@ -80,7 +80,7 @@ Each experiment requires a customized YAML configuration file.
     run: <run>               # If launch from eLog, erase that line
     task_timeout: 1200
     title: LUTE Task Configuration
-    work_dir: /sdf/data/lcls/ds/<hutch>/<experiment>/scratch/bayfai/ # Fill this line 
+    work_dir: /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/ # Fill this line 
     ---
     OptimizePyFAIGeometry:
     bo_params:
@@ -113,15 +113,15 @@ Each experiment requires a customized YAML configuration file.
         - calib_max
     detnames:
     - <detector> # Fill this line with detector name (epix10k2M, jungfrau4M, Rayonix...)
-    directory: /sdf/data/lcls/ds/<hutch>/<experiment>/scratch/bayfai/smd_output/ # Fill this line 
+    directory: /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/smd_output/ # Fill this line 
     #producer: /sdf/data/lcls/ds/<hutch>/<experiment>/results/smalldata_tools/lcls1_producers/smd_producer.py # Uncomment that line if SMD already set up in results and comment the next one
-    producer: /sdf/data/lcls/ds/<hutch>/<experiment>/scratch/bayfai/smalldata_tools/lcls1_producers/smd_producer.py # lute will clone SMD at working directory if no SMD found
+    producer: /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/smalldata_tools/lcls1_producers/smd_producer.py # lute will clone SMD at working directory if no SMD found
     ...
     ```
     BayFAI's config template is divided into three parts, the `lute_config`: basic experiment configuration (top top of the yaml), `OptimizePyFAIGeometry`: BayFAI required parameters, `SMDSubmit`: smalldata required parameters
     1. `lute_config`:
       - If launched from eLog, erase the experiment and run lines.
-      - Fill in the correct working directory `/sdf/data/lcls/ds/<hutch>/<experiment>/scratch/bayfai/`.
+      - Fill in the correct working directory `/sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/`.
     2. `OptimizePyFAIGeometry`:
       - Fill in a guessed detector distance, BayFAI will scan around that distance in the following manner [guess-50mm; guess+50mm] with a step size of 1mm.
       - Fill in the calibrant name, (usually AgBh or LaB6) (list of all calibrant available: [ressources](https://github.com/silx-kit/pyFAI/tree/main/src/pyFAI/resources/calibration)).
@@ -149,7 +149,7 @@ After setting correctly the config yaml, one can launch BayFAI workflow from the
 
 3. Launch BayFAI workflow
     ```bash
-    (base) [lconreux@sdfiana002 launchpad] /sdf/data/lcls/ds/<hutch>/<experiment>/scratch/bayfai/lute/launch_scripts/submit_launch_airflow.sh /sdf/data/lcls/ds/<hutch>/<experiment>/scratch/bayfai/lute/launch_scripts/launch_airflow.py -w bayfai -c /sdf/data/lcls/ds/<hutch>/<experiment>/scratch/bayfai/yamls/<experiment>.yaml --partition=milano --ntasks=102 --account=lcls:<experiment> --nodes=1 --test
+    (base) [lconreux@sdfiana002 launchpad] /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/lute/launch_scripts/submit_launch_airflow.sh /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/lute/launch_scripts/launch_airflow.py -w bayfai -c /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/yamls/<experiment>.yaml --partition=milano --ntasks=102 --account=lcls:<experiment> --nodes=1 --test
     ```
     This will launch the BayFAI workflow using the config yaml one specified earlier, and will scan 101 distances around the provided <guess distance>.
 
@@ -192,8 +192,8 @@ After setting correctly the config yaml, one can launch BayFAI workflow from the
         - Name: BayFAI
         - Trigger: Manually triggered
         - Location: S3DF
-        - Executable: /sdf/data/lcls/ds/hutch/experiment/scratch/bayfai/lute/launch_scripts/submit_launch_airflow.sh
-        - Parameters: /sdf/data/lcls/ds/hutch/experiment/scratch/bayfai/lute/launch_scripts/launch_airflow.py -w bayfai -c /sdf/data/lcls/ds/hutch/experiment/scratch/bayfai/yamls/<experiment>.yaml --partition=milano --ntasks=102 --account=lcls:experiment --nodes=1 --test
+        - Executable: /sdf/data/lcls/ds/hutch/experiment/results/bayfai/lute/launch_scripts/submit_launch_airflow.sh
+        - Parameters: /sdf/data/lcls/ds/hutch/experiment/results/bayfai/lute/launch_scripts/launch_airflow.py -w bayfai -c /sdf/data/lcls/ds/hutch/experiment/results/bayfai/yamls/<experiment>.yaml --partition=milano --ntasks=102 --account=lcls:experiment --nodes=1 --test
 
 | ![BayFAI workflow configuration from the eLog](images/bayfai-config.png) | 
 |:------------------------------------------------------------------------:| 
