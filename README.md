@@ -83,7 +83,7 @@ Each experiment requires a customized YAML configuration file.
     work_dir: /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/ # Fill this line 
     ---
     OptimizePyFAIGeometry:
-    bo_params:
+      bo_params:
         bounds:
         dist: <guess distance> # Fill this line with guessed detector distance
         poni1:
@@ -93,10 +93,10 @@ Each experiment requires a customized YAML configuration file.
         - -0.01
         - 0.01
         res: 0.0002         
-    calibrant: <calibrant> # Fill this line with calibrant name (AgBh, LaB6...)
-    det_type: <detector>   # Fill this line with detector name (epix10k2M, jungfrau4M, Rayonix...)
+      calibrant: <calibrant> # Fill this line with calibrant name (AgBh, LaB6...)
+      det_type: <detector>   # Fill this line with detector name (epix10k2M, jungfrau4M, Rayonix...)
     SubmitSMD:
-    detSumAlgos:
+      detSumAlgos:
         Rayonix:
         - calib_skipFirst_thresADU1
         - calib_skipFirst_max
@@ -111,11 +111,11 @@ Each experiment requires a customized YAML configuration file.
         jungfrau4M:
         - calib_thresADU5
         - calib_max
-    detnames:
-    - <detector> # Fill this line with detector name (epix10k2M, jungfrau4M, Rayonix...)
-    directory: /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/smd_output/ # Fill this line 
-    #producer: /sdf/data/lcls/ds/<hutch>/<experiment>/results/smalldata_tools/lcls1_producers/smd_producer.py # Uncomment that line if SMD already set up in results and comment the next one
-    producer: /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/smalldata_tools/lcls1_producers/smd_producer.py # lute will clone SMD at working directory if no SMD found
+      detnames:
+        - <detector> # Fill this line with detector name (epix10k2M, jungfrau4M, Rayonix...)
+      directory: /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/smd_output/ # Fill this line 
+      #producer: /sdf/data/lcls/ds/<hutch>/<experiment>/results/smalldata_tools/lcls1_producers/smd_producer.py # Uncomment that line if SMD already set up in results and comment the next one
+      producer: /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/smalldata_tools/lcls1_producers/smd_producer.py # lute will clone SMD at working directory if no SMD found
     ...
     ```
     BayFAI's config template is divided into three parts, the `lute_config`: basic experiment configuration (top top of the yaml), `OptimizePyFAIGeometry`: BayFAI required parameters, `SMDSubmit`: smalldata required parameters
