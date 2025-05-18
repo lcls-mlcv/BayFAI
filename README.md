@@ -85,7 +85,7 @@ Each experiment requires a customized YAML configuration file.
     OptimizePyFAIGeometry:
       bo_params:
         bounds:
-        dist: <guess distance> # Fill this line with guessed detector distance
+        dist: <guess distance> # Fill this line with guessed detector distance in meters
         poni1:
         - -0.01
         - 0.01
@@ -123,7 +123,7 @@ Each experiment requires a customized YAML configuration file.
       - If launched from eLog, erase the experiment and run lines.
       - Fill in the correct working directory `/sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/`.
     2. `OptimizePyFAIGeometry`:
-      - Fill in a guessed detector distance, BayFAI will scan around that distance in the following manner [guess-50mm; guess+50mm] with a step size of 1mm.
+      - Fill in a guessed detector distance, BayFAI will scan around that distance in the following manner [guess-0.5m; guess+0.5m] with a step size of 1mm.
       - Fill in the calibrant name, (usually AgBh or LaB6) (list of all calibrant available: [ressources](https://github.com/silx-kit/pyFAI/tree/main/src/pyFAI/resources/calibration)).
       - Fill in the detector type name, as it is defined in the psana environment (epix10k2M, jungfrau4M, Rayonix, Epix10kaQuad...).
     3. `SubmitSMD`:
