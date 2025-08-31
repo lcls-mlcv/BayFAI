@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bayfai"
+version = "0.1.0"
+authors = [{ name = "Louis Conreux" }]
+description = "Automated Geometry Calibration for X-ray Detector"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.20.0",
+    "matplotlib>=3.4.0",
+    "pyFAI>=0.20.0",
+    "scikit-learn>=1.0.0",
+    "scipy>=1.7.0",
+    "h5py>=3.0.0",
+    "panel>=0.14.0",
+    "tqdm>=4.60.0"
+]
+
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: Other/Proprietary License",
+    "Operating System :: OS Independent"
+]
+
+[project.urls]
+Homepage = "https://github.com/lcls-mlcv/BayFAI"
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bayfai"]
+namespaces = false
