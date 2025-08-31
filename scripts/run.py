@@ -24,6 +24,7 @@ def main(args):
         detector=detector,
         powder=powder,
         calibrant=calibrant,
+        fixed=args.fixed,
     )
 
     # Run Bayesian Optimization
@@ -72,6 +73,7 @@ if __name__ == "__main__":
     parser.add_argument("--wavelength", type=float, required=True, help="Wavelength of the X-ray source")
 
     # --- Search Space Arguments ---
+    parser.add_argument("--fixed", type=list, default=["rot3"], help="List of parameters to keep fixed during optimization")
     parser.add_argument("--center", type=dict, required=True, help="Center of the search space")
     parser.add_argument("--bounds", type=dict, required=True, help="Per-parameter size of the search space around the center")
     parser.add_argument("--resolution", type=dict, required=True, help="Per-parameter resolution of the search space")

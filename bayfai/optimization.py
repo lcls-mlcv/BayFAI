@@ -28,6 +28,8 @@ class BayesGeomOpt:
         Powder pattern data
     calibrant : PyFAI.Calibrant
         Calibrant object
+    fixed : list
+        List of parameters to keep fixed during optimization
     """
 
     def __init__(
@@ -37,6 +39,7 @@ class BayesGeomOpt:
         detector,
         powder,
         calibrant,
+        fixed,
     ):
         self.exp = exp
         self.run = run
@@ -44,8 +47,13 @@ class BayesGeomOpt:
         self.detector = detector
         self.powder = powder
         self.calibrant = calibrant
+        self.fixed = fixed
         self.order = ["dist", "poni1", "poni2", "rot1", "rot2", "rot3"]
         self.tth = np.array(calibrant.get_2th())
+        self.space = []
+        for p in self.order:
+            if p not in self.fixed:
+                self.space.append(p)
 
     @staticmethod
     def upper_confidence_bound(X, gp_model, beta=1.96):
@@ -65,8 +73,6 @@ class BayesGeomOpt:
             Center values for each parameter
         res : dict
             Resolution per parameter
-        order : list
-            Ordered list of parameters
         
         Returns
         -------
@@ -77,13 +83,11 @@ class BayesGeomOpt:
         X_norm : np.ndarray
             Normalized search space (between-1 and 1)
         """
-        self.space = []
         full_params = {}
         search_params = {}
         for p in self.order:
-            if p in bounds:
-                self.space.append(p)
-                low = center[p] - bounds[p][0]
+            if p in self.space:
+                low = center[p] + bounds[p][0]
                 high = center[p] + bounds[p][1]
                 step = res[p]
                 full_params[p] = np.arange(low, high + step, step)
