@@ -23,15 +23,13 @@ def extract_powder(powder_path, detname):
     """
     with h5py.File(powder_path) as h5:
         try:
-            powder = h5[
-                f"Sums/{detname}_calib_max"
-            ][()]
+            powder = h5[f"Sums/{detname}_calib_max"][()]
         except KeyError:
             print('No "Max" powder found in SmallData. Using "Sum" powder.')
             powder = h5[f"Sums/{detname}_calib"][()]
     return powder
 
-def preprocess_powder(powder, shape, smooth=False):
+def preprocess_powder(powder, smooth=False):
     """
     Preprocess extracted powder for enhancing optimization
 
@@ -45,20 +43,19 @@ def preprocess_powder(powder, shape, smooth=False):
         If True, apply smoothing to the powder image.
     """
     powder[powder < 0] = 0
-    powder = np.reshape(powder, shape)
-    raw_powder = powder.copy()
     if smooth:
         calib = gaussian_filter(powder, sigma=1)
         gradx_calib = np.zeros_like(powder)
         grady_calib = np.zeros_like(powder)
-        gradx_calib[:-1, :-1] = (
-            calib[1:, :-1] - calib[:-1, :-1] + calib[1:, 1:] - calib[:-1, 1:]
-        ) / 2
-        grady_calib[:-1, :-1] = (
-            calib[:-1, 1:] - calib[:-1, :-1] + calib[1:, 1:] - calib[1:, :-1]
-        ) / 2
+        for p in range(powder.shape[0]):
+            gradx_calib[p, :-1, :-1] = (
+                calib[p, 1:, :-1] - calib[p, :-1, :-1] + calib[p, 1:, 1:] - calib[p, :-1, 1:]
+            ) / 2
+            grady_calib[p, :-1, :-1] = (
+                calib[p, :-1, 1:] - calib[p, :-1, :-1] + calib[p, 1:, 1:] - calib[p, 1:, :-1]
+            ) / 2
         powder = np.sqrt(gradx_calib**2 + grady_calib**2)
-    return powder, raw_powder
+    return powder
 
 def generate_powder(powder_path, detname, smooth=False):
     """
@@ -74,10 +71,8 @@ def generate_powder(powder_path, detname, smooth=False):
         If True, apply smoothing to the powder image.
     """
     powder = extract_powder(powder_path, detname)
-    shape = powder.shape
-    stacked_shape = (shape[0] * shape[1], shape[2])
-    powder, raw_powder = preprocess_powder(powder, stacked_shape, smooth)
-    return powder, raw_powder
+    powder = preprocess_powder(powder, smooth)
+    return powder
 
 def build_detector(in_file, shape):
     """

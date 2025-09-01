@@ -1,21 +1,22 @@
 import argparse
+import json
 
 from bayfai.setup import generate_powder, build_detector, define_calibrant, min_intensity
 from bayfai.optimization import BayesGeomOpt
 
 def main(args):
     # Generate powder
-    powder, raw_powder = generate_powder(args.powder_path, args.detname, smooth=args.smooth)
+    powder = generate_powder(args.powder_path, args.detname, smooth=args.smooth)
 
     # Build detector
-    detector_shape = (powder.shape[0] * powder.shape[1], powder.shape[2])
-    detector = build_detector(args.in_file, detector_shape)
+    stacked_shape = (powder.shape[0] * powder.shape[1], powder.shape[2])
+    detector = build_detector(args.in_file, stacked_shape)
 
     # Define calibrant
     calibrant = define_calibrant(args.calibrant, args.wavelength)
 
     # Compute minimum intensity threshold
-    Imin = min_intensity(raw_powder, args.threshold)
+    Imin = min_intensity(powder, args.threshold)
 
     # Initialize Optimizer
     optimizer = BayesGeomOpt(
@@ -73,10 +74,10 @@ if __name__ == "__main__":
     parser.add_argument("--wavelength", type=float, required=True, help="Wavelength of the X-ray source")
 
     # --- Search Space Arguments ---
-    parser.add_argument("--fixed", type=list, default=["rot3"], help="List of parameters to keep fixed during optimization")
-    parser.add_argument("--center", type=dict, required=True, help="Center of the search space")
-    parser.add_argument("--bounds", type=dict, required=True, help="Per-parameter size of the search space around the center")
-    parser.add_argument("--resolution", type=dict, required=True, help="Per-parameter resolution of the search space")
+    parser.add_argument("--fixed", type=str, default=["rot3"], help="List of parameters to keep fixed during optimization")
+    parser.add_argument("--center", type=str, required=True, help="Center of the search space")
+    parser.add_argument("--bounds", type=str, required=True, help="Per-parameter size of the search space around the center")
+    parser.add_argument("--resolution", type=str, required=True, help="Per-parameter resolution of the search space")
 
     # --- BayFAI Hyperparameters ---
     parser.add_argument("--n_init", type=int, default=100, help="Number of initial samples")
@@ -90,4 +91,8 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility")
 
     args = parser.parse_args()
+    args.fixed = json.loads(args.fixed)
+    args.center = json.loads(args.center)
+    args.bounds = json.loads(args.bounds)
+    args.resolution = json.loads(args.resolution)
     main(args)
