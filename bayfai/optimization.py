@@ -79,8 +79,6 @@ class BayesGeomOpt:
         -------
         X : np.ndarray
             Full 6D geometry space (cartesian product)
-        X_search : np.ndarray
-            Search space for optimization
         X_norm : np.ndarray
             Normalized search space (between-1 and 1)
         """
