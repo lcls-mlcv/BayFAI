@@ -46,6 +46,7 @@ class BayesGeomOpt:
         self.det_name = detector.name
         self.detector = detector
         self.powder = powder
+        self.stacked_powder = np.reshape(powder, detector.shape)
         self.calibrant = calibrant
         self.fixed = fixed
         self.order = ["dist", "poni1", "poni2", "rot1", "rot2", "rot3"]
@@ -166,14 +167,15 @@ class BayesGeomOpt:
         ring = 0
         for tth_i in valid_ttha:
             if ring >= max_rings:
-                return score
+                return score / max_rings
             mask = np.abs(ttha - tth_i) <= rtol * tth_i
             pixels = self.powder[mask]
             pixels = pixels[pixels >= Imin]
             if len(pixels) == 0:
-                continue
+                score += 0
             else:
                 score += np.sum(pixels)
+            ring += 1
         score /= max_rings
         return score
 
@@ -214,7 +216,7 @@ class BayesGeomOpt:
         )
         sg = SingleGeometry(
             "Best Geometry",
-            self.powder,
+            self.stacked_powder,
             calibrant=self.calibrant,
             detector=self.detector,
             geometry=geom_initial,
