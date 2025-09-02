@@ -1,5 +1,6 @@
 import argparse
 import json
+from time import time
 
 from bayfai.setup import generate_powder, build_detector, define_calibrant, min_intensity
 from bayfai.optimization import BayesGeomOpt
@@ -41,7 +42,10 @@ def main(args):
         "prior": args.prior,
         "seed": args.seed,
     }
-    result = optimizer.bayes_opt(**optim_params)
+    tic = time()
+    result = optimizer.sync_bayes_opt(**optim_params)
+    toc = time()
+    print(f"Optimization took {toc - tic:.2f} seconds")
 
     if optimizer.rank == 0:
         print(f"Best distance: {result['params'][0]}")
