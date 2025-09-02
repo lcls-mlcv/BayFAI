@@ -34,7 +34,7 @@ def main(args):
     X, _ = optimizer.create_search_space(
         center=args.center,
         bounds=args.bounds,
-        resolution=args.resolution
+        res=args.resolution
     )
 
     # Grid Search
@@ -47,6 +47,7 @@ def main(args):
         if i == 0 or score > best_score:
             best_score = score
             best_params = sample
+    score_map_norm = (score_map - np.mean(score_map)) / (np.std(score_map) + 1e-8)
 
     print(f"Best distance: {best_params[0]}")
     print(f"Best shift-x: {best_params[1]}")
@@ -58,13 +59,13 @@ def main(args):
 
     # Save results
     np.savez_compressed(
-        f"{args.out_dir}/grid_search_score_{args.exp}_r{args.run:04d}.npz",
+        f"{args.out_dir}/grid_search_score_{args.exp}_r{args.run:04d}_rtol_{str(args.rtol).replace('.', '')}.npz",
         X=X,
         scores=score_map
     )
 
     # Plot results
-    fig = plot_pairwise_heatmaps(X, score_map, optimizer.order, best_params)
+    fig = plot_pairwise_heatmaps(X, score_map_norm, optimizer.order, best_params)
     fig.savefig(f"{args.out_dir}/grid_search_heatmap_{args.exp}_r{args.run:04d}_rtol_{str(args.rtol).replace('.', '')}.png", dpi=300)
 
 if __name__ == "__main__":

@@ -526,7 +526,7 @@ def create_diagnostics_panel(
         fig.savefig(plot, dpi=100)
     return fig
 
-def plot_pairwise_heatmaps(X, scores, param_names, best_params, n_grid=100):
+def plot_pairwise_heatmaps(X, scores, param_names, best_params, n_grid=101):
     """
     Pairwise heatmaps of scores.
 
