@@ -43,14 +43,15 @@ def main(args):
     }
     result = optimizer.bayes_opt(**optim_params)
 
-    print(f"Best distance: {result['params'][0]}")
-    print(f"Best shift-x: {result['params'][1]}")
-    print(f"Best shift-y: {result['params'][2]}")
-    print(f"Best tilt-x: {result['params'][3]}")
-    print(f"Best tilt-y: {result['params'][4]}")
-    print(f"Best tilt-z: {result['params'][5]}")
-    print(f"Best score: {result['score']}")
-    print(f"Residual: {result['residual']}")
+    if optimizer.rank == 0:
+        print(f"Best distance: {result['params'][0]}")
+        print(f"Best shift-x: {result['params'][1]}")
+        print(f"Best shift-y: {result['params'][2]}")
+        print(f"Best tilt-x: {result['params'][3]}")
+        print(f"Best tilt-y: {result['params'][4]}")
+        print(f"Best tilt-z: {result['params'][5]}")
+        print(f"Best score: {result['score']}")
+        print(f"Residual: {result['residual']}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BayFAI Geometry Optimization")
