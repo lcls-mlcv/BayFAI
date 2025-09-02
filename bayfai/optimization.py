@@ -6,7 +6,7 @@ from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, ConstantKernel, WhiteKernel
 from sklearn.utils._testing import ignore_warnings
 from sklearn.exceptions import ConvergenceWarning
-from scipy.stats import norm
+from mpi4py import MPI
 
 from bayfai.geometry import calculate_2theta
 
@@ -55,13 +55,18 @@ class BayesGeomOpt:
         for p in self.order:
             if p not in self.fixed:
                 self.space.append(p)
+        self.comm = MPI.COMM_WORLD
+        self.rank = self.comm.Get_rank()
+        self.size = self.comm.Get_size()
 
     @staticmethod
-    def upper_confidence_bound(X, gp_model, beta=1.96):
+    def q_UCB(X, gp_model, q, visited_idx, beta=1.96):
         y_pred, y_std = gp_model.predict(X, return_std=True)
         ucb = y_pred + beta * y_std
-        return ucb
-    
+        ucb[visited_idx] = -np.inf
+        top_idx = np.argsort(ucb)[-q:]
+        return top_idx
+
     def create_search_space(self, bounds, center, res):
         """
         Dynamically discretize the search space based on bounds.
@@ -109,6 +114,12 @@ class BayesGeomOpt:
         ----------
         X : np.ndarray
             Search space
+        X_norm : np.ndarray
+            Normalized search space
+        center : dict
+            Center values for each parameter
+        bounds : dict
+            Bounds for each parameter
         n_samples : int
             Number of samples to draw
         prior : bool
@@ -242,7 +253,7 @@ class BayesGeomOpt:
         rtol,
         beta=1.96,
         prior=True,
-        seed=None,
+        seed=0,
     ):
         """
         Perform Bayesian Optimization on 5 geometric parameters.
@@ -272,87 +283,108 @@ class BayesGeomOpt:
         seed : int
             Random seed for reproducibility
         """
+        np.random.seed(seed+self.rank)
 
-        if seed is not None:
-            np.random.seed(seed)
-
+        # 1. Create Search Space
         X, X_norm = self.create_search_space(bounds, center, res)
 
+        # 2. Sample Initial Points
+        # Rank 0 will sample from a Gaussian prior on center
+        # Other ranks will sample uniformly within search space
+        if self.rank == 0:
+            prior = True
+        else:
+            prior = False
         X_samples, X_norm_samples = self.sample_initial_points(X, X_norm, center, bounds, n_samples, prior)
 
         bo_history = {}
         y = np.zeros((n_samples))
 
-        # 0. Evaluate initial points
+        # 3. Evaluate initial points
         for i in range(n_samples):
             y[i] = self.score(X_samples[i], Imin, max_rings, rtol)
-            bo_history[f"init_sample_{i+1}"] = {"param": X_samples[i], "score": y[i]}
+            bo_history[f"init_{i+1}"] = {"param": X_samples[i], "score": y[i]}
 
-        if np.all(y == 0):
-            result = {
-                "bo_history": bo_history,
-                "params": center,
-                "residual": 0,
-                "score": 0,
-                "best_idx": 0,
-            }
-            return result
-        
-        y[np.isnan(y)] = 0
-        if np.std(y) != 0:
-            y_norm = (y - np.mean(y)) / np.std(y)
-        else:
-            y_norm = y - np.mean(y)
+        self.comm.Barrier()
 
-        kernel = RBF(
-            length_scale=0.3, length_scale_bounds=(0.2, 0.4)
-        ) * ConstantKernel(
-            constant_value=1.0, constant_value_bounds=(0.5, 1.5)
-        ) + WhiteKernel(
-            noise_level=0.001, noise_level_bounds="fixed"
-        )
-        gp_model = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=10, random_state=seed)
-        gp_model.fit(X_norm_samples, y_norm)
-        visited_idx = list([])
+        X_samples_all = self.comm.gather(X_samples, root=0)
+        X_norm_samples_all = self.comm.gather(X_norm_samples, root=0)
+        y_all = self.comm.gather(y, root=0)
+
+        if self.rank == 0:
+            X_samples_all = np.vstack(X_samples_all)
+            X_norm_samples_all = np.vstack(X_norm_samples_all)
+            y_all = np.concatenate(y_all)
+            y_all[np.isnan(y_all)] = 0
+            if np.std(y_all) != 0:
+                y_norm = (y_all - np.mean(y_all)) / np.std(y_all)
+            else:
+                y_norm = y_all - np.mean(y_all)
+
+            kernel = RBF(
+                length_scale=0.3, length_scale_bounds=(0.2, 0.4)
+            ) * ConstantKernel(
+                constant_value=1.0, constant_value_bounds=(0.5, 1.5)
+            ) + WhiteKernel(
+                noise_level=0.001, noise_level_bounds="fixed"
+            )
+            gp_model = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=10, random_state=seed)
+            gp_model.fit(X_norm_samples_all, y_norm)
+            visited_idx = list([])
 
         for i in range(n_iterations):
-            # 1. Generate the Acquisition Function values using the Gaussian Process Regressor
-            af_values = self.upper_confidence_bound(X_norm, gp_model, beta=beta)
-            af_values[visited_idx] = -np.inf
-
-            # 2. Select the next set of parameters based on the Acquisition Function
-            next = np.argmax(af_values)
-            next_point = X[next]
-            visited_idx.append(next)
-
-            # 3. Compute the score of the new set of parameters
-            score = self.score(next_point, Imin, max_rings, rtol)
-            if np.isnan(score):
-                score = 0
-            y = np.append(y, [score], axis=0)
-            bo_history[f"iteration_{i+1}"] = {
-                "param": X[next],
-                "score": score,
-            }
-            X_samples = np.append(X_samples, [X[next]], axis=0)
-            X_norm_samples = np.append(X_norm_samples, [X_norm[next]], axis=0)
-            if np.std(y) != 0:
-                y_norm = (y - np.mean(y)) / np.std(y)
+            # 4. Rank 0 selects next points with q-UCB
+            if self.rank == 0:
+                nexts = self.q_UCB(X_norm, gp_model, self.size, visited_idx, beta)
+                next_points = X[nexts]
+                visited_idx.extend(nexts)
             else:
-                y_norm = y - np.mean(y)
+                next_points = None
 
-            # 4. Update the Gaussian Process Regressor
-            gp_model.fit(X_norm_samples, y_norm)
+            # 5. Scatter points to all ranks
+            next_point = self.comm.scatter(next_points, root=0)
 
-        # 5. Evaluate best geometry using PyFAI refinement tool
-        best_idx = np.argmax(y_norm)
-        best_param = X_samples[best_idx]
-        residual, score, params = self.pyFAI_score(best_param, Imin, max_rings, rtol)
-        result = {
-            "bo_history": bo_history,
-            "params": params,
-            "residual": residual,
-            "score": score,
-            "best_idx": best_idx,
-        }
-        return result
+            # 6. Compute score locally
+            score = self.score(next_point, Imin, max_rings, rtol)
+            bo_history[f"iter_{i+1}"] = {"param": next_point, "score": score}
+
+            self.comm.Barrier()
+
+            # 7. Gather scores on Rank 0
+            score_all = self.comm.gather(score, root=0)
+
+            if self.rank == 0:
+                scores = np.array(score_all)
+                scores[np.isnan(scores)] = 0
+                y_all = np.concatenate([y_all, scores])
+                X_samples = np.vstack([X_samples, X[nexts]])
+                X_norm_samples = np.vstack([X_norm_samples, X_norm[nexts]])
+                if np.std(y_all) != 0:
+                    y_norm = (y_all - np.mean(y_all)) / np.std(y_all)
+                else:
+                    y_norm = y_all - np.mean(y_all)
+
+                # 8. Update Gaussian Process
+                gp_model.fit(X_norm_samples, y_norm)
+
+        self.comm.Barrier()
+
+        # 8. Collect BO history from each rank
+        bo_histories = self.comm.gather(bo_history, root=0)
+        if self.rank == 0:
+            for rank in range(self.size):
+                history = [bo_histories[r] for r in range(self.size)]
+
+        # 9. Evaluate best geometry using PyFAI refinement tool
+        if self.rank == 0:
+            best_idx = np.argmax(y_all)
+            best_param = X_samples[best_idx]
+            residual, score, params = self.pyFAI_score(best_param, Imin, max_rings, rtol)
+            result = {
+                "history": history,
+                "params": params,
+                "residual": residual,
+                "score": score,
+                "best_idx": best_idx,
+            }
+            return result
