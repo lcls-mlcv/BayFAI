@@ -1,134 +1,84 @@
 # BayFAI User Documentation
 
 <a name="toc"></a> **Jump to:**
-- [`BayFAI Configuration`](#bayfai-configuration)
+- [`BayFAI Experiment Configuration`](#bayfai-configuration)
 - [`Running BayFAI from the Command-Line`](#running-bayfai-from-the-command-line)
 - [`Running BayFAI from the eLog`](#running-bayfai-from-the-elog)
 - [`Running only BayFAI Geometry Calibration`](#running-only-bayfai-geometry-calibration)
+- [`Running BayFAI test version`](#running-bayfai-test-version)
 
 ---
 ## BayFAI Configuration
 
 ### Preliminaries `lute`
 
-BayFAI is run within the newer version of `btx`, `lute` standing for LCLS Unified Task Executor. This next iteration of `btx` is still in development.
-Due to its recent implement, BayFAI has not yet been merged in the main branch of `lute`.
+BayFAI is run within the newer version of `btx`, `lute` standing for LCLS Unified Task Executor. `lute` is still in development, so changes can be expected.
 
-A stable and up to date version with BayFAI can be found at [lute](https://github.com/LouConreux/lute).
+A stable and up to date `lute` version with BayFAI can be found at [lute](https://github.com/slac-lcls/lute).
+On S3DF, a local `lute` clone can be found at `/sdf/group/lcls/ds/tools/lute/dev/lute`. 
+A development and test `BayFAI` version can be found in this repository under `BayFAI` directory. 
+On S3DF, a local `BayFAI` clone can be found at `/sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/BayFAI`.
 
 ### Preliminaries `smalldata`
 
 BayFAI needs a powder image to perform the calibration. `smalldata` does it for us.
 A stable and up to date version working with BayFAI can be found at [smalldata](https://github.com/slac-lcls/smalldata_tools).
+No need to setup `smalldata`, either `lute` or the operator will generally do it for us.
 
 ### Experiment Configuration
 
-Each experiment requires a customized YAML configuration file.
+Once the experiment is ready to collect a geometry calibration run, and the user wants to run BayFAI, the first step is to setup `lute`.
 
-1. Navigate to the experiment scratch folder and create a working directory:
+1. Run the `setup_lute` command:
+   TW: this script requires the user to have an active kerberos authentification ticket to be able to populate the eLog. You can check if you have an active ticket by running `klist` in your terminal.
+    If you don't have one, before running `setup_lute`, run `kinit` in your terminal and give your unix password.
     ```bash
-    (base) [lconreux@sdfiana002 ~] cd /sdf/data/lcls/ds/<hutch>/<experiment>/results/
-    (base) [lconreux@sdfiana002 results] mkdir bayfai
+    (base) [lconreux@sdfiana002 ~] /sdf/group/lcls/ds/tools/lute/dev/lute/utilities/setup_lute -e <experiment> -f --directory bayfai -w bayfai --test --nodes=1
     ```
+    ___Nota Bene___: The script will prompt you three times (for partition, account, and number of tasks). Simply press Enter each time to accept the default settings.
 
-2. Navigate to the lute working directory and create useful subfolders:
+2. Navigate to the lute working directory and create useful folders:
     ```bash
-    (base) [lconreux@sdfiana002 results] cd bayfai
-    (base) [lconreux@sdfiana002 bayfai] mkdir yamls
-    (base) [lconreux@sdfiana002 bayfai] mkdir launchpad
+    (base) [lconreux@sdfiana002 ~] cd /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/
     (base) [lconreux@sdfiana002 bayfai] mkdir smd_output
     ```
+    In this directory, you should see a fresh install of `lute` as well as the working directory for the current experiment `lute_output`.
+    We create a `smd_ouput` folder where the summed powder image will be stored to not overwrite the experiment data in the `hdf5` experiment folder.
 
-3. Clone the BayFAI lute repository:
-   ```bash
-    (base) [lconreux@sdfiana002 bayfai] git clone https://github.com/LouConreux/lute.git
-    ```
-
-4. Set up Permissions:
-   ```bash
-    (base) [lconreux@sdfiana002 bayfai] chmod -R a+rx /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai
-    ```
-   
-5. Fetch a config yaml:
-    A template config yaml can be found at : `/sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/yamls/config.yaml`.
-    Copy this config yaml to the scratch folder with appropriate experiment tag:
+3. Modify the template config yaml:
+    Inside the `lute_output`, you should see a template yaml file with the hutch tag as a prefix.
     ```bash
-    (base) [lconreux@sdfiana002 bayfai] cp /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/yamls/config.yaml yamls/<experiment>.yaml
+    (base) [lconreux@sdfiana002 bayfai] nano/vim lute_output/<hutch>_lute.yaml
     ```
-    At this point, the working directory should look like this: 
-    ```bash
-    (base) [lconreux@sdfiana002 bayfai]$ tree
-    .
-    ├── launchpad
-    ├── lute
-    │   └── lute repository with BayFAI
-    ├── smd_output
-    └── yamls
-        └── <experiment>.yaml
-    ```
-
-4. Fill in the blanks in the config yaml:
-    A template config yaml has been created but the user needs to fill in some important information.
-    ```bash
-    (base) [lconreux@sdfiana002 bayfai] nano yamls/<experiment>.yaml
-    ```
-    Here what the template config file looks like:
-    ```bash
-    date: 2023/10/25
-    lute_version: 0.1
-    experiment: <experiment> # If launch from eLog, erase that line
-    run: <run>               # If launch from eLog, erase that line
-    task_timeout: 1200
-    title: LUTE Task Configuration
-    work_dir: /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/ # Fill this line 
-    ---
-    OptimizePyFAIGeometry:
-      bo_params:
-        bounds:
-        dist: <guess distance> # Fill this line with guessed detector distance in meters
-        poni1:
-        - -0.01
-        - 0.01
-        poni2:
-        - -0.01
-        - 0.01
-        res: 0.0002         
-      calibrant: <calibrant> # Fill this line with calibrant name (AgBh, LaB6...)
-      det_type: <detector>   # Fill this line with detector name (epix10k2M, jungfrau4M, Rayonix...)
-    SubmitSMD:
-      detSumAlgos:
-        Rayonix:
-        - calib_skipFirst_thresADU1
-        - calib_skipFirst_max
-        all:
-        - calib
-        - calib_dropped
-        - calib_dropped_square
-        - calib_thresADU1
-        epix10k2M:
-        - calib_thresADU5
-        - calib_max
-        jungfrau4M:
-        - calib_thresADU5
-        - calib_max
-      detnames:
-        - <detector> # Fill this line with detector name (epix10k2M, jungfrau4M, Rayonix...)
-      directory: /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/smd_output/ # Fill this line 
-      #producer: /sdf/data/lcls/ds/<hutch>/<experiment>/results/smalldata_tools/lcls1_producers/smd_producer.py # Uncomment that line if SMD already set up in results and comment the next one
-      producer: /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/smalldata_tools/lcls1_producers/smd_producer.py # lute will clone SMD at working directory if no SMD found
-    ...
-    ```
-    BayFAI's config template is divided into three parts, the `lute_config`: basic experiment configuration (top top of the yaml), `OptimizePyFAIGeometry`: BayFAI required parameters, `SMDSubmit`: smalldata required parameters
+    
+    A `lute` config template is divided into several _documents_, the `lute_config` which configures basic experiment information (top top of the yaml), then comes task-specific parameters.
     1. `lute_config`:
-      - If launched from eLog, erase the experiment and run lines.
-      - Fill in the correct working directory `/sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/`.
-    2. `OptimizePyFAIGeometry`:
-      - Fill in a guessed detector distance, BayFAI will scan around that distance in the following manner [guess-0.5m; guess+0.5m] with a step size of 1mm.
-      - Fill in the calibrant name, (usually AgBh or LaB6) (list of all calibrant available: [ressources](https://github.com/silx-kit/pyFAI/tree/main/src/pyFAI/resources/calibration)).
-      - Fill in the detector type name, as it is defined in the psana environment (epix10k2M, jungfrau4M, Rayonix, Epix10kaQuad...).
-    3. `SubmitSMD`:
-      - Fill the output directory for smalldata.
-      - Fill out the smalldata producer python file path. If you don't have smalldata set up for your experiment, no worries, lute will clone it for you!
+       - If launched from eLog, erase the experiment and run lines.
+    2. Scroll down until you find `SubmitSMD`:
+       - Fill in the `detnames` section with the name of detector that was used for that run.
+             `detnames: ["jungfrau"]`
+       - Fill in the output `directory` where the hdf5 file will be stored. By default, it will be outputted inside the `hdf5` experiment folder, but we do not want to overwrite stuff in that folder.
+             `directory: /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/smd_output/`
+    3. Scroll down all the way to `BayFAI`:
+      - Fill in a `center` initial guess geometry, BayFAI will scan around that geometry.
+      - Fill in the `calibrant` name (usually AgBh or LaB6) (list of all calibrant available: [ressources](https://github.com/silx-kit/pyFAI/tree/main/src/pyFAI/resources/calibration)).
+      - Fill in the `detname`, as it is defined in the psana environment (epix10k2M, jungfrau4M, jungfrau, Epix10kaQuad0, etc...).
+            ```bash
+            BayFAI:
+                fixed:
+                - "rot1"
+                - "rot2"
+                - "rot3"
+                center:
+                dist: 0.1                   # Fill this section with rough estimates
+                poni1: 0.0
+                poni2: 0.0
+                rot1: 0.0
+                rot2: 0.0
+                rot3: 0.0
+                calibrant: "AgBh"           # Fill this line with calibrant name (AgBh, LaB6...)
+                detname: "jungfrau"         # Fill this line with detector name (epix10k2M, jungfrau...)
+            ```
 
 ## Running BayFAI from the Command-Line
 
@@ -138,62 +88,40 @@ After setting correctly the config yaml, one can launch BayFAI workflow from the
 
 1. Navigate to the launchpad folder:
     ```bash
+    (base) [lconreux@sdfiana002 bayfai] mkdir launchpad 
     (base) [lconreux@sdfiana002 bayfai] cd launchpad 
     ```
 
 2. Double-check if the distance, the calibrant, or the detector have been changed in between runs!
     - Modify the config yaml accordingly!
     ```bash
-    (base) [lconreux@sdfiana002 launchpad] nano ../yamls/<experiment>.yaml
+    (base) [lconreux@sdfiana002 launchpad] nano ../lute_output/<hutch>_lute.yaml
     ```
 
 3. Launch BayFAI workflow
     ```bash
-    (base) [lconreux@sdfiana002 launchpad] /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/lute/launch_scripts/submit_launch_airflow.sh /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/lute/launch_scripts/launch_airflow.py -w bayfai -c /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/yamls/<experiment>.yaml --partition=milano --ntasks=102 --account=lcls:<experiment> --nodes=1 --test
+    (base) [lconreux@sdfiana002 launchpad] /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/lute/launch_scripts/submit_launch_airflow.sh /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai/lute/launch_scripts/launch_airflow.py -w bayfai     -c /sdf/data/lcls/ds/<hutch>/<experiment>/results/bayfai//lute_output/<hutch>_lute.yaml --partition=milano --account=lcls:<experiment> --ntasks=101 --nodes=1 --test
     ```
-    This will launch the BayFAI workflow using the config yaml one specified earlier, and will scan 101 distances around the provided <guess distance>.
+    This will launch the BayFAI workflow using the config yaml one specified earlier, and will scan 100 distances around the provided guess _dist_.
 
 4. Monitor the Results (after a couple of minutes):
-    - Inside the launchpad folder, one will find the logs. If everything went smoothed, one should see Task Complete at the bottom of it along with the geometry!
-    - Inside the smd_output, one will find the powder computed thanks to `smalldata`.
-    - After task completion, a figs folder should be created. Inside of it, Fitting plots along with BayFAI metrics can be found.
-    - The corrected geometry files should created within the calibration folder of the experiment: 
+    - Inside the launchpad folder, one will find the logs. If everything went smooth, you should see Task Complete at the bottom of it along with the geometry!
+    - Inside the smd_output, one will find the powder computed thanks to `SubmitSMD`.
+    - After task completion, a `figs` folder should be created inside the working directory. Inside of it, Fitting plots along with BayFAI metrics can be found.
+    - The calibrated geometry files should created within the `geom` also inside the working directory:
     ```bash
-    (base) [lconreux@sdfiana002 launchpad] cd /sdf/data/lcls/ds/<hutch>/<experiment>/calib/<group>/<source>/geometry/
-    (base) [lconreux@sdfiana002 geometry] ls -l
+    (base) [lconreux@sdfiana002 launchpad] cd ../lute_output/geom
+    (base) [lconreux@sdfiana002 geometry] ll
     -rw-rw-r--+ 1 lbgee    ps-users  3267 Dec  9 15:28 0-end.data
     -rw-rw----+ 1 lconreux ps-users  2729 Dec  9 19:13 <run>-end.data
     -rw-rw-r--+ 1 lbgee    ps-users   257 Dec  9 15:28 HISTORY
     -rw-rw----+ 1 lconreux ps-users 18365 Dec  9 19:13 r<run:0>4>.geom
     ```
 
-    At this point, the working directory should look like this:
-    ```bash
-    (base) [lconreux@sdfiana002 bayfai]$ tree
-    .
-    ├── figs
-    │    └── bayFAI_<experiment>_r<run:0>4>.png
-    ├── launchpad
-    │   └── slurm-<job-id>.out
-    ├── lute
-    │   └── lute repository with BayFAI
-    ├── lute.db # lute database created to communicate between SmallData Task and BayFAI
-    ├── smd_output
-    │   └── <experiment>_Run<run:0>4>.h5
-    └── yamls
-        └── <experiment>.yaml
-    ```
-
 ## Running BayFAI from the eLog
 
-1. Go to the Workflow Definition Panel:
-    - Click on Add a Workflow
-    - Fill in the Workflow Definition informations:
-        - Name: BayFAI
-        - Trigger: Manually triggered
-        - Location: S3DF
-        - Executable: /sdf/data/lcls/ds/hutch/experiment/results/bayfai/lute/launch_scripts/submit_launch_airflow.sh
-        - Parameters: /sdf/data/lcls/ds/hutch/experiment/results/bayfai/lute/launch_scripts/launch_airflow.py -w bayfai -c /sdf/data/lcls/ds/hutch/experiment/results/bayfai/yamls/<experiment>.yaml --partition=milano --ntasks=102 --account=lcls:experiment --nodes=1 --test
+1. After calling `setup_lute`, all the necessary fields to define the geometry calibration workflow should be already populated.
+Check if a `lute_bayfai` workflow exists by going to 
 
 | ![BayFAI workflow configuration from the eLog](images/bayfai-config.png) | 
 |:------------------------------------------------------------------------:| 
@@ -237,19 +165,6 @@ At this point, this is what the Workflow Definition Panel should look like:
 |    __BayFAI summary of geometry inferred from LaB6 for mfxl1047723 run 18.__    |
 
 
-If you are interested, at this point, the working directory should look like this:
-```bash
-(base) [lconreux@sdfiana002 bayfai]$ tree
-.
-├── launchpad
-├── smd_output
-│   └── <experiment>_Run<run:0>4>.h5
-├── figs
-│    └── bayFAI_<experiment>_r<run:0>4>.png
-├── lute.db
-└── yamls
-    └── <experiment>.yaml
-```
 The powder image used is stored as h5 file inside smd_output, and the fitting summary seen on the eLog is stored under the figs folder.
 
 ## Running only BayFAI Geometry Calibration
