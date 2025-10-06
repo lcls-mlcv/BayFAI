@@ -2,31 +2,24 @@ import argparse
 import json
 from time import time
 
-from bayfai.setup import generate_powder, build_detector, define_calibrant, min_intensity
-from bayfai.optimization import BayesGeomOpt
+from bayfai.optimization import BayFAIOpt
 
 def main(args):
-    # Generate powder
-    powder = generate_powder(args.powder_path, args.detname, smooth=args.smooth)
-
-    # Build detector
-    stacked_shape = (powder.shape[0] * powder.shape[1], powder.shape[2])
-    detector = build_detector(args.in_file, stacked_shape)
-
-    # Define calibrant
-    calibrant = define_calibrant(args.calibrant, args.wavelength)
-
-    # Compute minimum intensity threshold
-    Imin = min_intensity(powder, args.threshold)
-
     # Initialize Optimizer
-    optimizer = BayesGeomOpt(
+    optimizer = BayFAIOpt(
         exp=args.exp,
         run=args.run,
-        detector=detector,
-        powder=powder,
-        calibrant=calibrant,
+    )
+
+    # Setup Optimization
+    optimizer.setup(
+        detname=args.detname,
+        powder=args.powder,
+        smooth=args.smooth,
+        calibrant=args.calibrant,
+        wavelength=args.wavelength,
         fixed=args.fixed,
+        in_file=args.in_file,
     )
 
     # Run Bayesian Optimization
@@ -36,26 +29,25 @@ def main(args):
         "res": args.resolution,
         "n_samples": args.n_init,
         "n_iterations": args.n_iter,
-        "Imin": Imin,
         "max_rings": args.max_rings,
         "rtol": args.rtol,
         "prior": args.prior,
         "seed": args.seed,
     }
     tic = time()
-    result = optimizer.sync_bayes_opt(**optim_params)
+    optimizer.bayfai_opt(**optim_params)
     toc = time()
     print(f"Optimization took {toc - tic:.2f} seconds")
 
     if optimizer.rank == 0:
-        print(f"Best distance: {result['params'][0]}")
-        print(f"Best shift-x: {result['params'][1]}")
-        print(f"Best shift-y: {result['params'][2]}")
-        print(f"Best tilt-x: {result['params'][3]}")
-        print(f"Best tilt-y: {result['params'][4]}")
-        print(f"Best tilt-z: {result['params'][5]}")
-        print(f"Best score: {result['score']}")
-        print(f"Residual: {result['residual']}")
+        print(f"Best distance: {optimizer.params[0]}")
+        print(f"Best shift-x: {optimizer.params[1]}")
+        print(f"Best shift-y: {optimizer.params[2]}")
+        print(f"Best tilt-x: {optimizer.params[3]}")
+        print(f"Best tilt-y: {optimizer.params[4]}")
+        print(f"Best tilt-z: {optimizer.params[5]}")
+        print(f"Best score: {optimizer.best_score}")
+        print(f"Residual: {optimizer.residual}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BayFAI Geometry Optimization")
@@ -72,7 +64,6 @@ if __name__ == "__main__":
     # --- Powder Arguments ---
     parser.add_argument("--powder_path", type=str, required=True, help="Path to the powder data file")
     parser.add_argument("--smooth", action="store_true", help="Apply smoothing to the powder image")
-    parser.add_argument("--threshold", type=float, default=95, help="Percentile to use for thresholding the powder image")
 
     # --- Calibration Arguments ---
     parser.add_argument("--calibrant", type=str, required=True, help="Name of the calibrant")

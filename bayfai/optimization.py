@@ -1,21 +1,30 @@
+import sys
+import os
 import numpy as np
+import numpy.typing as npt
+import h5py
 import pyFAI
 from pyFAI.geometry import Geometry
 from pyFAI.goniometer import SingleGeometry
+from pyFAI.geometryRefinement import GeometryRefinement
+from pyFAI.calibrant import CALIBRANT_FACTORY
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, ConstantKernel, WhiteKernel
 from sklearn.utils._testing import ignore_warnings
 from sklearn.exceptions import ConvergenceWarning
+from scipy.signal import find_peaks
 from mpi4py import MPI
-from time import time
 
-from bayfai.geometry import calculate_2theta
+sys.path.append("/sdf/home/l/lconreux/LCLSGeom")
+from LCLSGeom.psana.converter import PsanaToPyFAI, PyFAIToPsana, PyFAIToCrystFEL
+
+from bayfai.geometry import azimuthal_integration
 
 pyFAI.use_opencl = False
 
-class BayesGeomOpt:
+class BayFAIOpt:
     """
-    Class to perform Geometry Optimization using Bayesian Optimization wrapped over PyFAI
+    Class to run BayFAI optimization on a powder image.
 
     Parameters
     ----------
@@ -23,42 +32,20 @@ class BayesGeomOpt:
         Experiment name
     run : int
         Run number
-    detector : PyFAI.Detector
-        PyFAI detector object
-    powder : np.ndarray
-        Powder pattern data
-    calibrant : PyFAI.Calibrant
-        Calibrant object
-    fixed : list
-        List of parameters to keep fixed during optimization
     """
 
     def __init__(
         self,
         exp,
         run,
-        detector,
-        powder,
-        calibrant,
-        fixed,
     ):
         self.exp = exp
         self.run = run
-        self.det_name = detector.name
-        self.detector = detector
-        self.powder = powder
-        self.stacked_powder = np.reshape(powder, detector.shape)
-        self.calibrant = calibrant
-        self.fixed = fixed
-        self.order = ["dist", "poni1", "poni2", "rot1", "rot2", "rot3"]
-        self.tth = np.array(calibrant.get_2th())
-        self.space = []
-        for p in self.order:
-            if p not in self.fixed:
-                self.space.append(p)
         self.comm = MPI.COMM_WORLD
         self.rank = self.comm.Get_rank()
         self.size = self.comm.Get_size()
+        if self.rank == 0:
+            print(f"Getting {self.size} processes for BayFAIOpt task", flush=True)
 
     @staticmethod
     def UCB(X, gp_model, visited_idx, beta=1.96):
@@ -76,19 +63,242 @@ class BayesGeomOpt:
         top_next = np.argsort(ucb)[-q:]
         return top_next
 
-    def create_search_space(self, bounds, center, res):
+    def setup(
+        self,
+        detname: str,
+        powder: str,
+        smooth: bool,
+        calibrant: str,
+        wavelength: float,
+        fixed: list,
+        in_file: str,
+    ):
         """
-        Dynamically discretize the search space based on bounds.
-        
+        Setup the BayFAI optimization.
+
         Parameters
         ----------
-        bounds : dict
-            Bounds for each parameter, format: {param: (lower, upper)}
+        detname : str
+            Name of the detector
+        powder : str
+            Path to the powder image to use for calibration
+        smooth : bool
+            If True, apply smoothing to the powder image
+        calibrant : PyFAI.Calibrant
+            PyFAI calibrant object
+        wavelength: float
+            X-ray beam wavelength
+        fixed : list
+            List of parameters to keep fixed during optimization
+        in_file : str
+            Path to the input geometry file
+
+        Returns
+        -------
+        Imin : float
+            Minimum intensity value for identifying Bragg peaks
+        """
+        self.detector = self.build_detector(in_file)
+        self.powder = self.generate_powder(powder, detname, smooth)
+        self.stacked_powder = np.reshape(self.powder, self.detector.shape)
+        self.Imin = np.percentile(self.powder, 95)
+        self.calibrant = self.define_calibrant(calibrant, wavelength)
+        self.set_search_space(fixed)
+
+    def extract_powder(self, powder_path: str, detname: str) -> npt.NDArray[np.float64]:
+        """
+        Extract a powder image from smalldata analysis.
+
+        Parameters
+        ----------
+        powder_path : str
+            Path to the h5 file containing the powder data.
+
+        Returns
+        -------
+        powder : npt.NDArray[np.float64]
+            The extracted powder image.
+        """
+        with h5py.File(powder_path) as h5:
+            try:
+                powder = h5[f"Sums/{detname}_calib_max"][()]
+            except KeyError:
+                print(
+                    f"Cannot find {detname} Max powder in {powder_path}, defaulting to {detname} Sum instead.", flush=True,
+                )
+                powder = h5[f"Sums/{detname}_calib"][()]
+        return powder
+
+    def preprocess_powder(
+        self,
+        powder: npt.NDArray[np.float64],
+        mask: npt.NDArray[np.integer],
+        smooth: bool = False,
+    ) -> npt.NDArray[np.float64]:
+        """
+        Preprocess extracted powder for enhancing optimization
+
+        Parameters
+        ----------
+        powder : npt.NDArray[np.float64]
+            Powder image to use for calibration
+        mask : npt.NDArray[np.integer]
+            Pixel mask to apply to the powder image
+        smooth : bool, optional
+            If True, apply smoothing to the powder image.
+        """
+        powder[powder < 0] = 0
+        if smooth:
+            for p in range(powder.shape[0]):
+                gradx = np.gradient(powder[p], axis=0)
+                grady = np.gradient(powder[p], axis=1)
+                powder[p] = np.sqrt(gradx**2 + grady**2)
+        powder[mask == 0] = 0
+        return powder
+
+    def generate_powder(
+        self, powder_path: str, detname: str, smooth: bool = False
+    ) -> npt.NDArray[np.float64]:
+        """
+        Generate a preprocessed powder image from smalldata reduction.
+
+        Parameters
+        ----------
+        powder_path : str
+            Path to the h5 file containing the powder data.
+        detname : str
+            Name of the detector
+        smooth : bool, optional
+            If True, apply smoothing to the powder image.
+        """
+        mask = self.detector.geo.get_pixel_mask(mbits=3)
+        mask = np.squeeze(mask, axis=0)
+        powder = self.extract_powder(powder_path, detname)
+        powder = self.preprocess_powder(powder, mask, smooth)
+        return powder
+
+    def build_detector(self, in_file: str) -> pyFAI.detectors.Detector:
+        """
+        Read the metrology data and build a pyFAI detector object.
+
+        Parameters
+        ----------
+        in_file : str
+            Path to the Geometry .data file
+
+        Returns
+        -------
+        pyFAI.Detector
+            Configured pyFAI detector object
+        """
+        psana_to_pyfai = PsanaToPyFAI(
+            in_file=in_file,
+        )
+        detector = psana_to_pyfai.detector
+        return detector
+
+    def update_geometry(self, out_file: str) -> pyFAI.detectors.Detector:
+        """
+        Update the geometry and write a new .poni, .geom and .data file
+
+        Parameters
+        ----------
+        optimizer : BayesGeomOpt
+            Optimizer object
+        out_file : str
+            Path to the output file
+        """
+        path = os.path.dirname(out_file)
+        poni_file = os.path.join(path, f"r{self.run:0>4}.poni")
+        self.gr.save(poni_file)
+        PyFAIToPsana(
+            in_file=poni_file,
+            detector=self.detector,
+            out_file=out_file,
+        )
+        geom_file = os.path.join(path, f"r{self.run:0>4}.geom")
+        PyFAIToCrystFEL(
+            in_file=poni_file,
+            detector=self.detector,
+            out_file=geom_file,
+        )
+        psana_to_pyfai = PsanaToPyFAI(
+            in_file=out_file,
+        )
+        detector = psana_to_pyfai.detector
+        return detector
+
+    def define_calibrant(self, calibrant_name: str, wavelength: float) -> pyFAI.calibrant.Calibrant:
+        """
+        Define calibrant for optimization with appropriate wavelength
+
+        Parameters
+        ----------
+        calibrant_name : str
+            Name of the calibrant
+        wavelength: float
+            X-ray beam wavelength
+        """
+        self.calibrant_name = calibrant_name
+        calibrant = CALIBRANT_FACTORY(calibrant_name)
+        calibrant.wavelength = wavelength
+        return calibrant
+
+    def set_search_space(self, fixed: list) -> None:
+        """
+        Define the search space for the free parameters.
+
+        Parameters
+        ----------
+        fixed : list
+            List of parameters to keep fixed during optimization
+        """
+        self.space = []
+        parallelized = ["dist"]
+        self.order = ["dist", "poni1", "poni2", "rot1", "rot2", "rot3"]
+        for p in self.order:
+            if p not in fixed and p not in parallelized:
+                self.space.append(p)
+
+    def distribute_distances(self, center, res):
+        """
+        Distribute distances across MPI ranks.
+
+        Parameters
+        ----------
         center : dict
             Center values for each parameter
+        res : float
+            Resolution of the grid used to discretize the parameter search space
+
+        Returns
+        -------
+        dist : float
+            The distance assigned to this MPI rank
+        """
+        low = center["dist"] - res["dist"] * self.size / 2
+        high = center["dist"] + res["dist"] * self.size / 2
+        distances = np.linspace(low, high - res["dist"], self.size)
+        distances = np.round(distances * 10000, decimals=0) / 10000
+        self.distances = distances
+        dist = distances[self.rank]
+        return dist
+
+    def create_search_space(self, dist, center, bounds, res):
+        """
+        Discretize the search space for the free parameters.
+
+        Parameters
+        ----------
+        dist : float
+            Distance on this MPI rank
+        center : dict
+            Center values for each parameter
+        bounds : dict
+            Bounds for each parameter, format: {param: (lower, upper)}
         res : dict
             Resolution per parameter
-        
+
         Returns
         -------
         X : np.ndarray
@@ -96,20 +306,27 @@ class BayesGeomOpt:
         X_norm : np.ndarray
             Normalized search space (between-1 and 1)
         """
+        center["dist"] = dist
         full_params = {}
         search_params = {}
         for p in self.order:
             if p in self.space:
                 low = center[p] + bounds[p][0]
                 high = center[p] + bounds[p][1]
+                if high < low:
+                    low, high = high, low
                 step = res[p]
                 full_params[p] = np.arange(low, high + step, step)
                 search_params[p] = full_params[p]
             else:
                 full_params[p] = np.array([center[p]])
 
-        X = np.array(np.meshgrid(*[full_params[p] for p in self.order])).T.reshape(-1, len(self.order))
-        X_search = np.array(np.meshgrid(*[search_params[p] for p in self.space])).T.reshape(-1, len(self.space))
+        X = np.array(np.meshgrid(*[full_params[p] for p in self.order])).T.reshape(
+            -1, len(self.order)
+        )
+        X_search = np.array(
+            np.meshgrid(*[search_params[p] for p in self.space])
+        ).T.reshape(-1, len(self.space))
         self.mins = np.min(X_search, axis=0)
         self.maxs = np.max(X_search, axis=0)
         X_norm = 2 * (X_search - self.mins) / (self.maxs - self.mins) - 1
@@ -141,7 +358,9 @@ class BayesGeomOpt:
         """
         if prior:
             means = [center[p] for p in self.space]
-            cov = np.diag([((bounds[p][1] - bounds[p][0]) / 5) ** 2 for p in self.space])
+            cov = np.diag(
+                [(np.abs((bounds[p][1] - bounds[p][0])) / 5) ** 2 for p in self.space]
+            )
             X_free = np.random.multivariate_normal(means, cov, n_samples)
             X_free = np.clip(X_free, self.mins, self.maxs)
             X_norm_samples = 2 * (X_free - self.mins) / (self.maxs - self.mins) - 1
@@ -156,50 +375,107 @@ class BayesGeomOpt:
             X_norm_samples = X_norm[idx_samples]
             return X_samples, X_norm_samples
 
-    def score(self, sample, Imin, max_rings, rtol=1e-2):
+    def number_bragg_peaks(self, sample, Imin, max_rings):
         """
-        Evaluate score at a given sampled geometry.
-        
+        Evaluate score at a given sampled geometry based on number of Bragg peaks found.
+
         Parameters
         ----------
-        sample : array-like
+        sample : list
             Geometry parameters
         Imin : float
             Minimum intensity threshold
         max_rings : int
             Maximum number of rings to consider
-        rtol : float
-            Relative tolerance for masking ring pixels
 
         Returns
         -------
         score : float
             Scalar score for Bayesian optimization
         """
-        ttha = calculate_2theta(self.detector, sample)
-        min_ttha = np.min(ttha)
-        max_ttha = np.max(ttha)
-        valid_ttha = self.tth[(self.tth >= min_ttha) & (self.tth <= max_ttha)]
-
-        score = 0.0
-        ring = 0
-        for tth_i in valid_ttha:
-            if ring >= max_rings:
-                return score / max_rings
-            mask = np.abs(ttha - tth_i) <= rtol * tth_i
-            pixels = self.powder[mask]
-            pixels = pixels[pixels >= Imin]
-            if len(pixels) != 0:
-                score += np.sum(pixels)
-            ring += 1
-        score /= max_rings
+        dist, poni1, poni2, rot1, rot2, rot3 = sample
+        geom_sample = Geometry(
+            dist=dist,
+            poni1=poni1,
+            poni2=poni2,
+            rot1=rot1,
+            rot2=rot2,
+            rot3=rot3,
+            detector=self.detector,
+            wavelength=self.calibrant.wavelength,
+        )
+        sg = SingleGeometry(
+            "Score Geometry",
+            self.stacked_powder,
+            calibrant=self.calibrant,
+            detector=self.detector,
+            geometry=geom_sample,
+        )
+        sg.extract_cp(max_rings=max_rings, pts_per_deg=1, Imin=Imin)
+        score = len(sg.geometry_refinement.data)
         return score
 
-    def pyFAI_score(self, best_param, Imin, max_rings, rtol):
+    def q_residual(self, sample, max_rings):
+        """
+        Evaluate score at a given sampled geometry based on the q-peaks
+        ßfound in the azimuthal integration.
+
+        Parameters
+        ----------
+        sample: list
+            Geometry Parameters
+        max_rings: int
+            Maximum number of rings to consider
+        """
+        profile, ttha = azimuthal_integration(self.powder, self.detector, sample)
+        ttha_min = np.min(ttha)
+        ttha_max = np.max(ttha)
+
+        tth = self.calibrant.get_2th()
+        valid_rings = (tth >= ttha_min) & (tth <= ttha_max)
+        valid_tth = tth[valid_rings][:max_rings]
+        min_delta = np.min(np.diff(np.sort(valid_tth)))
+
+        peaks = find_peaks(profile, distance=min_delta, prominence=1)
+        tth_peaks = ttha[peaks][:max_rings]
+
+        res = np.sum((tth_peaks - valid_tth) ** 2) / max_rings
+        return res
+
+
+    def ring_intensity(self, sample, max_rings):
+        """
+        Evaluate score at a given sampled geometry based on the mean intensity 
+        of the found peaks in the azimuthal integration.
+
+        Paramters
+        ---------
+        sample: list
+            Geometry Parameters
+        max_rings: int
+            Maximum number of rings to consider
+        """
+        profile, ttha = azimuthal_integration(self.powder, self.detector, sample)
+        ttha_min = np.min(ttha)
+        ttha_max = np.max(ttha)
+
+        tth = self.calibrant.get_2th()
+        valid_rings = (tth >= ttha_min) & (tth <= ttha_max)
+        valid_tth = tth[valid_rings][:max_rings]
+        min_delta = np.min(np.diff(np.sort(valid_tth)))
+
+        peaks = find_peaks(profile, distance=min_delta, prominence=1)
+        rings = peaks[:max_rings]
+
+        res = np.sum(profile[rings]) / max_rings
+        return res
+
+
+    def pyFAI_score(self, best_param, Imin, max_rings):
         """
         Evaluate geometry found by BO on pyFAI refinement tool
 
-        Parameters 
+        Parameters
         ----------
         best_param : list
             Best parameters found by Bayesian optimization
@@ -207,8 +483,6 @@ class BayesGeomOpt:
             Minimum intensity threshold
         max_rings : int
             Maximum number of rings to consider
-        rtol : float
-            Relative tolerance for masking ring pixels
 
         Returns
         -------
@@ -220,7 +494,7 @@ class BayesGeomOpt:
             Refined parameters
         """
         dist, poni1, poni2, rot1, rot2, rot3 = best_param
-        geom_initial = Geometry(
+        best_geom = Geometry(
             dist=dist,
             poni1=poni1,
             poni2=poni2,
@@ -235,21 +509,21 @@ class BayesGeomOpt:
             self.stacked_powder,
             calibrant=self.calibrant,
             detector=self.detector,
-            geometry=geom_initial,
+            geometry=best_geom,
         )
         sg.extract_cp(max_rings=max_rings, pts_per_deg=1, Imin=Imin)
         self.sg = sg
-        score = self.score(best_param, Imin, max_rings, rtol)
         residual = 0
         if len(sg.geometry_refinement.data) > 0:
-            residual = sg.geometry_refinement.refine3(fix=["rot3", "wavelength"])
+            residual = sg.geometry_refinement.refine3(fix=["wavelength"])
         params = sg.geometry_refinement.param
+        score = self.number_bragg_peaks(params, Imin, max_rings)
         return residual, score, params
 
-
     @ignore_warnings(category=ConvergenceWarning)
-    def sync_bayes_opt(
+    def bayes_opt_distance(
         self,
+        dist,
         center,
         bounds,
         res,
@@ -257,280 +531,220 @@ class BayesGeomOpt:
         n_iterations,
         Imin,
         max_rings,
-        rtol,
         beta=1.96,
         prior=True,
         seed=0,
     ):
         """
-        Perform Bayesian Optimization on 5 geometric parameters.
+        Run Bayesian Optimization on a subspace of fixed distance.
 
         Parameters
         ----------
+        dist : float
+            Distance on this MPI rank
         center : dict
-            Dictionary of the center values for each parameter
+            Dictionary of center values for each parameter
         bounds : dict
-            Dictionary of the per-parameter bounds for the search space
+            Dictionary of bounds for each parameter
         res : dict
-            Dictionary of the per-parameter resolutions for the search space
+            Dictionary of resolution for each parameter
         n_samples : int
-            Number of initial samples to draw
+            Number of samples to initialize the Gaussian Process
         n_iterations : int
-            Number of optimization iterations
+            Number of iterations of Bayesian Optimization
         Imin : float
-            Minimum intensity threshold
+            Minimum intensity threshold for identifying Bragg peaks
         max_rings : int
-            Maximum number of rings to consider
-        rtol : float
-            Relative tolerance in q-space for masking ring pixels
+            Maximum number of rings to search for Bragg peaks
         beta : float
-            Exploration-exploitation trade-off parameter for UCB
+            Exploration-exploitation trade-off parameter for UCB acquisition function
         prior : bool
-            Use prior information for optimization
+            Whether to sample initial points around the center or randomly
         seed : int
             Random seed for reproducibility
         """
-        np.random.seed(seed+self.rank)
+        np.random.seed(seed)
 
-        # 1. Create Search Space
-        X, X_norm = self.create_search_space(bounds, center, res)
-        print(f"Rank {self.rank}: Search space size: {X.shape[0]}")
+        # 1. Create the search space
+        X, X_norm = self.create_search_space(dist, center, bounds, res)
 
-        # 2. Sample Initial Points
-        # Rank 0 will sample from a Gaussian prior on center
-        # Other ranks will sample uniformly within search space
-        if self.rank == 0:
-            prior = True
-        else:
-            prior = False
-        X_samples, X_norm_samples = self.sample_initial_points(X, X_norm, center, bounds, n_samples, prior)
+        # 2. Sample initial points
+        X_samples, X_norm_samples = self.sample_initial_points(
+            X, X_norm, center, bounds, n_samples, prior
+        )
 
-        bo_history = {}
+        # 3. Evaluate the initial points
+        bo_history = {"params": [], "scores": []}
         y = np.zeros((n_samples))
-
-        # 3. Evaluate initial points
         for i in range(n_samples):
-            y[i] = self.score(X_samples[i], Imin, max_rings, rtol)
-            bo_history[f"init_{i+1}"] = {"param": X_samples[i], "score": y[i]}
+            y[i] = self.number_bragg_peaks(X_samples[i], Imin, max_rings)
+            bo_history["params"].append(X_samples[i])
+            bo_history["scores"].append(y[i])
 
-        tic = time()
-        self.comm.Barrier()
-
-        X_samples_all = self.comm.gather(X_samples, root=0)
-        X_norm_samples_all = self.comm.gather(X_norm_samples, root=0)
-        y_all = self.comm.gather(y, root=0)
-        toc = time()
-
-        if self.rank == 0:
-            X_samples_all = np.vstack(X_samples_all)
-            X_norm_samples_all = np.vstack(X_norm_samples_all)
-            y_all = np.concatenate(y_all)
-            y_all[np.isnan(y_all)] = 0
-            if np.std(y_all) != 0:
-                y_norm = (y_all - np.mean(y_all)) / np.std(y_all)
-            else:
-                y_norm = y_all - np.mean(y_all)
-
-            kernel = RBF(
-                length_scale=0.3, length_scale_bounds=(0.2, 0.4)
-            ) * ConstantKernel(
-                constant_value=1.0, constant_value_bounds=(0.5, 1.5)
-            ) + WhiteKernel(
-                noise_level=0.001, noise_level_bounds="fixed"
-            )
-            gp_model = GaussianProcessRegressor(kernel=kernel, random_state=seed)
-            gp_model.fit(X_norm_samples_all, y_norm)
-            visited_idx = list([])
-
-        for i in range(n_iterations):
-            # 4. Rank 0 selects next points with q-UCB
-            t0 = time()
-            if self.rank == 0:
-                nexts = self.q_UCB(X_norm, gp_model, self.size, visited_idx, beta)
-                next_points = X[nexts]
-                visited_idx.extend(nexts)
-            else:
-                next_points = None
-
-            # 5. Scatter points to all ranks
-            next_point = self.comm.scatter(next_points, root=0)
-
-            # 6. Compute score locally
-            score = self.score(next_point, Imin, max_rings, rtol)
-            bo_history[f"iter_{i+1}"] = {"param": next_point, "score": score}
-
-            self.comm.Barrier()
-
-            # 7. Gather scores on Rank 0
-            score_all = self.comm.gather(score, root=0)
-
-            if self.rank == 0:
-                scores = np.array(score_all)
-                scores[np.isnan(scores)] = 0
-                y_all = np.concatenate([y_all, scores])
-                X_samples = np.vstack([X_samples, X[nexts]])
-                X_norm_samples = np.vstack([X_norm_samples, X_norm[nexts]])
-                if np.std(y_all) != 0:
-                    y_norm = (y_all - np.mean(y_all)) / np.std(y_all)
-                else:
-                    y_norm = y_all - np.mean(y_all)
-
-                # 8. Update Gaussian Process
-                gp_model.fit(X_norm_samples, y_norm)
-                t1 = time()
-                print(f"Iter {i+1}: Total iteration took {t1 - t0:.6f} seconds")
-
-        self.comm.Barrier()
-
-        # 8. Collect BO history from each rank
-        bo_histories = self.comm.gather(bo_history, root=0)
-        if self.rank == 0:
-            for rank in range(self.size):
-                history = [bo_histories[r] for r in range(self.size)]
-
-        # 9. Evaluate best geometry using PyFAI refinement tool
-        if self.rank == 0:
-            best_idx = np.argmax(y_all)
-            best_param = X_samples[best_idx]
-            residual, score, params = self.pyFAI_score(best_param, Imin, max_rings, rtol)
+        if np.all(y == 0):
             result = {
-                "history": history,
-                "params": params,
-                "residual": residual,
-                "score": score,
-                "best_idx": best_idx,
+                "bo_history": bo_history,
+                "params": [dist, 0, 0, 0, 0, 0],
+                "residual": 0,
+                "score": 0,
+                "best_idx": 0,
             }
+            print(
+                f"All samples have score 0 for dist={dist}. Skipping Bayesian Optimization.", flush=True,
+            )
             return result
-        
-    @ignore_warnings(category=ConvergenceWarning)
-    def async_bayes_opt(
-        self,
-        center,
-        bounds,
-        res,
-        n_samples,
-        n_iterations,
-        Imin,
-        max_rings,
-        rtol,
-        beta=1.96,
-        prior=True,
-        seed=0,
-    ):
-        """
-        Perform Bayesian Optimization on 5 geometric parameters.
 
-        Parameters
-        ----------
-        center : dict
-            Dictionary of the center values for each parameter
-        bounds : dict
-            Dictionary of the per-parameter bounds for the search space
-        res : dict
-            Dictionary of the per-parameter resolutions for the search space
-        n_samples : int
-            Number of initial samples to draw
-        n_iterations : int
-            Number of optimization iterations
-        Imin : float
-            Minimum intensity threshold
-        max_rings : int
-            Maximum number of rings to consider
-        rtol : float
-            Relative tolerance in q-space for masking ring pixels
-        beta : float
-            Exploration-exploitation trade-off parameter for UCB
-        prior : bool
-            Use prior information for optimization
-        seed : int
-            Random seed for reproducibility
-        """
-        np.random.seed(seed+self.rank)
-
-        # 1. Create Search Space
-        X, X_norm = self.create_search_space(bounds, center, res)
-        print(f"Rank {self.rank}: Search space size: {X.shape[0]}")
-
-        # 2. Sample Initial Points
-        # Rank 0 will sample from a Gaussian prior on center
-        # Other ranks will sample uniformly within search space
-        if self.rank == 0:
-            prior = True
-        else:
-            prior = False
-        X_samples, X_norm_samples = self.sample_initial_points(X, X_norm, center, bounds, n_samples, prior)
-
-        bo_history = {}
-        y = np.zeros((n_samples))
-
-        # 3. Evaluate initial points
-        for i in range(n_samples):
-            y[i] = self.score(X_samples[i], Imin, max_rings, rtol)
-            bo_history[f"init_{i+1}"] = {"param": X_samples[i], "score": y[i]}
-
+        y[np.isnan(y)] = 0
         if np.std(y) != 0:
             y_norm = (y - np.mean(y)) / np.std(y)
         else:
             y_norm = y - np.mean(y)
 
-        kernel = RBF(
-            length_scale=0.3, length_scale_bounds=(0.2, 0.4)
-        ) * ConstantKernel(
+        # 4. Initialize the Gaussian Process model
+        kernel = RBF(length_scale=0.3, length_scale_bounds=(0.2, 0.4)) * ConstantKernel(
             constant_value=1.0, constant_value_bounds=(0.5, 1.5)
-        ) + WhiteKernel(
-            noise_level=0.001, noise_level_bounds="fixed"
+        ) + WhiteKernel(noise_level=0.001, noise_level_bounds="fixed")
+        gp_model = GaussianProcessRegressor(
+            kernel=kernel, n_restarts_optimizer=10, random_state=0
         )
-        gp_model = GaussianProcessRegressor(kernel=kernel, random_state=seed)
         gp_model.fit(X_norm_samples, y_norm)
         visited_idx = list([])
 
+        # 5. Run the Bayesian Optimization loop
         for i in range(n_iterations):
-            # 4. Rank 0 selects next points with q-UCB
-            t0 = time()
+            # 6. Select the next point to evaluate
             next = self.UCB(X_norm, gp_model, visited_idx, beta)
-            next_point = X[next]
+            next_sample = X[next]
             visited_idx.append(next)
 
-            # 5. Compute score
-            score = self.score(next_point, Imin, max_rings, rtol)
-            bo_history[f"iter_{i+1}"] = {"param": next_point, "score": score}
-
-            y = np.concatenate([y, [score]])
-            X_samples = np.vstack([X_samples, [X[next]]])
-            X_norm_samples = np.vstack([X_norm_samples, [X_norm[next]]])
+            # 7. Compute the score of the next point
+            score = self.number_bragg_peaks(next_sample, Imin, max_rings)
+            y = np.append(y, [score], axis=0)
+            bo_history["params"].append(next_sample)
+            bo_history["scores"].append(score)
+            X_samples = np.append(X_samples, [X[next]], axis=0)
+            X_norm_samples = np.append(X_norm_samples, [X_norm[next]], axis=0)
             if np.std(y) != 0:
                 y_norm = (y - np.mean(y)) / np.std(y)
             else:
                 y_norm = y - np.mean(y)
 
-            # 6. Update Gaussian Process
+            # 8. Update the Gaussian Process model
             gp_model.fit(X_norm_samples, y_norm)
-            t1 = time()
-            print(f"Iter {i+1}: Total iteration took {t1 - t0:.6f} seconds")
+
+        # 9. Gather results
+        best_idx = np.argmax(y)
+        best_param = X_samples[best_idx]
+        residual, score, params = self.pyFAI_score(best_param, Imin, max_rings)
+        print(
+            f"Rank {self.rank} dist={dist:.4f}m: score={score}, residual={residual:3e}", flush=True,
+        )
+        result = {
+            "bo_history": bo_history,
+            "params": params,
+            "residual": residual,
+            "score": score,
+            "best_idx": best_idx,
+        }
+        return result
+
+    def bayfai_opt(
+        self,
+        center,
+        bounds,
+        res,
+        n_samples,
+        n_iterations,
+        max_rings,
+        beta=1.96,
+        prior=True,
+        seed=0,
+    ):
+        """
+        Run BayFAI optimization.
+        Split the distance parameter across MPI ranks.
+        Run Bayesian Optimization on each rank with fixed distance.
+        Perform pyFAI least-squares refinement for each rank's best geometry.
+        Optimal geometry is chosen based on the lowest residual among ranks.
+
+        Parameters
+        ----------
+        center : dict
+            Dictionary of center values for each parameter
+        bounds : dict
+            Dictionary of bounds for each parameter
+        res : dict
+            Dictionary of resolution for each parameter
+        n_samples : int
+            Number of samples to initialize the Gaussian Process
+        n_iterations : int
+            Number of iterations of Bayesian Optimization
+        max_rings : int
+            Maximum number of rings to consider
+        beta : float
+            Exploration-exploitation trade-off parameter for UCB acquisition function
+        prior : bool
+            Whether to sample initial points around the center or randomly
+        seed : int
+            Random seed for reproducibility
+        """
+        dist = self.distribute_distances(center, res)
+        print(
+            f"Rank {self.rank}: Running Bayesian Optimization on distance {dist:.4f} m", flush=True,
+        )
+
+        bayfai_hyperparams = {
+            "n_samples": n_samples,
+            "n_iterations": n_iterations,
+            "Imin": self.Imin,
+            "max_rings": max_rings,
+            "beta": beta,
+            "prior": prior,
+            "seed": seed,
+        }
+
+        results = self.bayes_opt_distance(
+            dist,
+            center,
+            bounds,
+            res,
+            **bayfai_hyperparams,
+        )
 
         self.comm.Barrier()
 
-        # 7. Collect BO history from each rank
-        bo_histories = self.comm.gather(bo_history, root=0)
-        y_all = self.comm.gather(y, root=0)
-        X_samples_all = self.comm.gather(X_samples, root=0)
-        X_norm_samples_all = self.comm.gather(X_norm_samples, root=0)
-        if self.rank == 0:
-            for rank in range(self.size):
-                history = [bo_histories[r] for r in range(self.size)]
-            y = np.concatenate(y_all)
-            X_samples = np.vstack(X_samples_all)
-            X_norm_samples = np.vstack(X_norm_samples_all)
+        self.scan = {}
+        self.scan["bo_history"] = self.comm.gather(results["bo_history"], root=0)
+        self.scan["params"] = self.comm.gather(results["params"], root=0)
+        self.scan["residual"] = self.comm.gather(results["residual"], root=0)
+        self.scan["score"] = self.comm.gather(results["score"], root=0)
+        self.scan["best_idx"] = self.comm.gather(results["best_idx"], root=0)
+        self.finalize()
 
-            # 8. Evaluate best geometry using PyFAI refinement tool
-            best_idx = np.argmax(y)
-            best_param = X_samples[best_idx]
-            residual, score, params = self.pyFAI_score(best_param, Imin, max_rings, rtol)
-            result = {
-                "history": history,
-                "params": params,
-                "residual": residual,
-                "score": score,
-                "best_idx": best_idx,
-            }
-            return result
+    def finalize(self):
+        if self.rank == 0:
+            for key in self.scan.keys():
+                self.scan[key] = np.array([item for item in self.scan[key]])
+            non_zeros = np.where(self.scan["score"] > 0)[0]
+            thrsh = np.percentile(self.scan["score"][non_zeros], 10)
+            self.thrsh = thrsh
+            score_indices = np.where(self.scan["score"] > thrsh)[0]
+            shift_index = np.argmin(self.scan["residual"][score_indices])
+            index = score_indices[shift_index]
+            self.index = index
+            self.bo_history = self.scan["bo_history"][index]
+            self.params = self.scan["params"][index]
+            self.residual = self.scan["residual"][index]
+            self.best_score = self.scan["score"][index]
+            self.best_idx = self.scan["best_idx"][index]
+            self.gr = GeometryRefinement(
+                calibrant=self.calibrant,
+                dist=self.params[0],
+                poni1=self.params[1],
+                poni2=self.params[2],
+                rot1=self.params[3],
+                rot2=self.params[4],
+                rot3=self.params[5],
+                detector=self.detector,
+                wavelength=self.calibrant.wavelength,
+            )
