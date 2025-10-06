@@ -866,8 +866,8 @@ class BayFAIOpt:
                 if scores[j] > best_score:
                     best_dist = i
                     best_score = scores[j]
-                    best_index = j
+                    best_idx = j
             self.best_dist = best_dist
             self.best_score = best_score
-            self.best_index = best_index
+            self.best_index = best_idx
             print("Grid Search finished!")
