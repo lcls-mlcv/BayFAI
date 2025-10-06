@@ -150,7 +150,7 @@ On the eLog, check if a `lute_bayfai` workflow exists by going to __Workflow__ >
    -rw-rw----+ 1 lconreux ps-users 18365 Dec  9 19:13 r<run:0>4>.poni
    ```
 
-| ![BayFAI reporting of geometry inferred from AgBh run](images/bayfai-geom.png) | 
+| ![BayFAI reporting of geometry inferred from AgBh run](images/bayfai-control.png) | 
 |:------------------------------------------------------------------------------:| 
 |       __BayFAI reporting of geometry from AgBh for mfx100852324 run 298.__       |
 
