@@ -2,32 +2,25 @@ import argparse
 import json
 import numpy as np
 
-from bayfai.setup import generate_powder, build_detector, define_calibrant, min_intensity
-from bayfai.optimization import BayesGeomOpt
+from bayfai.optimization import BayFAIOpt
 from bayfai.plots import plot_pairwise_heatmaps
 
 def main(args):
-    # Generate powder
-    powder = generate_powder(args.powder_path, args.detname, smooth=args.smooth)
-
-    # Build detector
-    stacked_shape = (powder.shape[0] * powder.shape[1], powder.shape[2])
-    detector = build_detector(args.in_file, stacked_shape)
-
-    # Define calibrant
-    calibrant = define_calibrant(args.calibrant, args.wavelength)
-
-    # Compute minimum intensity threshold
-    Imin = min_intensity(powder, args.threshold)
-
     # Initialize Optimizer
-    optimizer = BayesGeomOpt(
+    optimizer = BayFAIOpt(
         exp=args.exp,
         run=args.run,
-        detector=detector,
-        powder=powder,
-        calibrant=calibrant,
+    )
+
+    # Setup Optimization
+    optimizer.setup(
+        detname=args.detname,
+        powder=args.powder,
+        smooth=args.smooth,
+        calibrant=args.calibrant,
+        wavelength=args.wavelength,
         fixed=args.fixed,
+        in_file=args.in_file,
     )
 
     # Create Search Space
