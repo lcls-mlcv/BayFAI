@@ -527,6 +527,7 @@ class BayFAIOpt:
         center,
         bounds,
         res,
+        score,
         n_samples,
         n_iterations,
         Imin,
@@ -548,6 +549,8 @@ class BayFAIOpt:
             Dictionary of bounds for each parameter
         res : dict
             Dictionary of resolution for each parameter
+        score : str
+            Score function to use
         n_samples : int
             Number of samples to initialize the Gaussian Process
         n_iterations : int
@@ -577,7 +580,12 @@ class BayFAIOpt:
         bo_history = {"params": [], "scores": []}
         y = np.zeros((n_samples))
         for i in range(n_samples):
-            y[i] = self.number_bragg_peaks(X_samples[i], Imin, max_rings)
+            if score == "bragg":
+                y[i] = self.number_bragg_peaks(X_samples[i], Imin, max_rings)
+            elif score == "residual":
+                y[i] = -self.q_residual(X_samples[i], max_rings)
+            elif score == "intensity":
+                y[i] = self.ring_intensity(X_samples[i], max_rings)
             bo_history["params"].append(X_samples[i])
             bo_history["scores"].append(y[i])
 
@@ -618,10 +626,15 @@ class BayFAIOpt:
             visited_idx.append(next)
 
             # 7. Compute the score of the next point
-            score = self.number_bragg_peaks(next_sample, Imin, max_rings)
-            y = np.append(y, [score], axis=0)
+            if score == "bragg":
+                yi = self.number_bragg_peaks(X_samples[i], Imin, max_rings)
+            elif score == "residual":
+                yi = -self.q_residual(X_samples[i], max_rings)
+            elif score == "intensity":
+                yi = self.ring_intensity(X_samples[i], max_rings)
+            y = np.append(y, [yi], axis=0)
             bo_history["params"].append(next_sample)
-            bo_history["scores"].append(score)
+            bo_history["scores"].append(yi)
             X_samples = np.append(X_samples, [X[next]], axis=0)
             X_norm_samples = np.append(X_norm_samples, [X_norm[next]], axis=0)
             if np.std(y) != 0:
@@ -659,6 +672,7 @@ class BayFAIOpt:
         beta=1.96,
         prior=True,
         seed=0,
+        score="bragg",
     ):
         """
         Run BayFAI optimization.
@@ -687,6 +701,8 @@ class BayFAIOpt:
             Whether to sample initial points around the center or randomly
         seed : int
             Random seed for reproducibility
+        score : str
+            Score function to use
         """
         dist = self.distribute_distances(center, res)
         print(
@@ -708,6 +724,7 @@ class BayFAIOpt:
             center,
             bounds,
             res,
+            score,
             **bayfai_hyperparams,
         )
 
@@ -748,3 +765,109 @@ class BayFAIOpt:
                 detector=self.detector,
                 wavelength=self.calibrant.wavelength,
             )
+
+    def grid_search_distance(
+        self,
+        dist,
+        center,
+        bounds,
+        res,
+        max_rings,
+        score,
+        out_dir,
+    )
+        """
+        Run Grid Search on a fixed distance.
+
+        Parameters
+        ----------
+        dist : float
+            Distanc
+        """
+        # 1. Create the search space
+        X, _ = self.create_search_space(dist, center, bounds, res)
+
+        # 2. Evaluate Points
+        history = {"params": [], "scores": []}
+        Imin = np.percentile(self.powder, 95)
+        y = np.zeros((X.shape[0]))
+        for i in range(X.shape[0]):
+            if score == "bragg":
+                y[i] = self.number_bragg_peaks(X[i], Imin, max_rings)
+            elif score == "residual":
+                y[i] = -self.q_residual(X[i], max_rings)
+            elif score == "intensity":
+                y[i] = self.ring_intensity(X[i], max_rings)
+            history["params"].append(X[i])
+            history["scores"].append(y[i])
+        
+        # 3. Save results
+        filename = f"{self.exp}_r{self.run:04d}_score_{score}_dist_{str(dist).replace('.', '')}"
+        np.savez_compressed(f"{out_dir}/{filename}_scores.npz", history["scores"])
+        np.savez_compressed(f"{out_dir}/{filename}_params.npz", history["params"])
+
+        return history
+
+    def grid_search(
+        self,
+        center,
+        bounds,
+        res,
+        max_rings,
+        score,
+        out_dir,
+    ):
+        """
+        Run Grid Search on all parameter space
+        Split the distance parameter across MPI ranks.
+        Run Grid Search on each rank with fixed distance.
+
+        Parameters
+        ----------
+        center : dict
+            Dictionary of center values for each parameter
+        bounds : dict
+            Dictionary of bounds for each parameter
+        res : dict
+            Dictionary of resolution for each parameter
+        max_rings : int
+            Maximum number of rings to consider
+        score : str
+            Score function to use
+        out_dir : str
+            Output Directory path
+        """
+        dist = self.distribute_distances(center, res)
+        print(
+            f"Rank {self.rank}: Running Bayesian Optimization on distance {dist:.4f} m", flush=True,
+        )
+
+        history = self.grid_search_distance(
+            dist,
+            center,
+            bounds,
+            res,
+            max_rings,
+            score,
+            out_dir,
+        )
+
+        self.comm.Barrier()
+
+        self.scan = self.comm.gather(history, root=0)
+
+        if self.rank == 0:
+            best_dist = 0
+            best_score = 0
+            best_idx = 0 
+            for i in range(len(self.scan)):
+                scores = self.scan[i]["scores"]
+                j = np.argmax(scores)
+                if scores[j] > best_score:
+                    best_dist = i
+                    best_score = scores[j]
+                    best_index = j
+            self.best_dist = best_dist
+            self.best_score = best_score
+            self.best_index = best_index
+            print("Grid Search finished!")

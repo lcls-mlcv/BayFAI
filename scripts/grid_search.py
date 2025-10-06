@@ -1,9 +1,8 @@
 import argparse
 import json
-import numpy as np
+from time import time
 
 from bayfai.optimization import BayFAIOpt
-from bayfai.plots import plot_pairwise_heatmaps
 
 def main(args):
     # Initialize Optimizer
@@ -23,43 +22,30 @@ def main(args):
         in_file=args.in_file,
     )
 
-    # Create Search Space
-    X, _ = optimizer.create_search_space(
+    # Run Grid Search
+    tic = time()
+    optimizer.grid_search(
         center=args.center,
         bounds=args.bounds,
-        res=args.resolution
+        res=args.resolutions,
+        max_rings=args.max_rings,
+        score=args.score,
+        out_dir=args.out_dir,
     )
+    toc = time()
+    print(f"Optimization took {toc - tic:.2f} seconds")
 
-    # Grid Search
-    score_map = np.zeros(X.shape[0])
-    best_score = -np.inf
-    for i in range(X.shape[0]):
-        sample = X[i]
-        score = optimizer.score(sample, Imin, args.max_rings, args.rtol)
-        score_map[i] = score
-        if i == 0 or score > best_score:
-            best_score = score
-            best_params = sample
-    score_map_norm = (score_map - np.mean(score_map)) / (np.std(score_map) + 1e-8)
+    print(f"Best History: {optimizer.best_dist}", flush=True)
+    print(f"Best Distance: {optimizer.scan[optimizer.best_dist]["params"][0]}", flush=True)
+    print(f"Best Score: {optimizer.best_score}", flush=True)
+    print("Best Geometry", flush=True)
+    print(f"Best Distance: {optimizer.scan[best_dist]["params"][best_index][0]}")
+    print(f"Best X-shift: {optimizer.scan[best_dist]["params"][best_index][1]}")
+    print(f"Best Y-shift: {optimizer.scan[best_dist]["params"][best_index][2]}")
+    print(f"Best Rot-x: {optimizer.scan[best_dist]["params"][best_index][3]}")
+    print(f"Best Rot-y: {optimizer.scan[best_dist]["params"][best_index][4]}")
+    print(f"Best Rot-z: {optimizer.scan[best_dist]["params"][best_index][5]}")
 
-    print(f"Best distance: {best_params[0]}")
-    print(f"Best shift-x: {best_params[1]}")
-    print(f"Best shift-y: {best_params[2]}")
-    print(f"Best tilt-x: {best_params[3]}")
-    print(f"Best tilt-y: {best_params[4]}")
-    print(f"Best tilt-z: {best_params[5]}")
-    print(f"Best score: {best_score}")
-
-    # Save results
-    np.savez_compressed(
-        f"{args.out_dir}/grid_search_score_{args.exp}_r{args.run:04d}_rtol_{str(args.rtol).replace('.', '')}.npz",
-        X=X,
-        scores=score_map
-    )
-
-    # Plot results
-    fig = plot_pairwise_heatmaps(X, score_map_norm, optimizer.order, best_params)
-    fig.savefig(f"{args.out_dir}/grid_search_heatmap_{args.exp}_r{args.run:04d}_rtol_{str(args.rtol).replace('.', '')}.png", dpi=300)
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BayFAI Geometry Optimization")
