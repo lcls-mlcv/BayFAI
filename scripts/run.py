@@ -33,6 +33,7 @@ def main(args):
         "rtol": args.rtol,
         "prior": args.prior,
         "seed": args.seed,
+        "score": args.score,
     }
     tic = time()
     optimizer.bayfai_opt(**optim_params)
@@ -74,6 +75,9 @@ if __name__ == "__main__":
     parser.add_argument("--center", type=str, required=True, help="Center of the search space")
     parser.add_argument("--bounds", type=str, required=True, help="Per-parameter size of the search space around the center")
     parser.add_argument("--resolution", type=str, required=True, help="Per-parameter resolution of the search space")
+
+    # --- Score Function ---
+    parser.add_argument("--score", type=str, choices=["bragg", "residual", "intensity"], default="bragg", help="Score function to use for Bayesian Optimization.")
 
     # --- BayFAI Hyperparameters ---
     parser.add_argument("--n_init", type=int, default=100, help="Number of initial samples")
