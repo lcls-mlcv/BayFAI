@@ -439,7 +439,7 @@ class BayFAIOpt:
         min_delta = min_ring_delta / min_resolution
 
         peaks, _ = find_peaks(profile, distance=min_delta, prominence=1)
-        observed_rings = ttha[peaks]
+        observed_rings = ttha[peaks][:max_rings]
 
         if len(peaks) < max_rings:
             expected_rings[:len(peaks)]
