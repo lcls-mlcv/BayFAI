@@ -14,7 +14,7 @@ def main(args):
     # Setup Optimization
     optimizer.setup(
         detname=args.detname,
-        powder=args.powder,
+        powder=args.powder_path,
         smooth=args.smooth,
         calibrant=args.calibrant,
         wavelength=args.wavelength,
@@ -26,7 +26,7 @@ def main(args):
     optim_params = {
         "center": args.center,
         "bounds": args.bounds,
-        "res": args.resolution,
+        "res": args.resolutions,
         "n_samples": args.n_init,
         "n_iterations": args.n_iter,
         "max_rings": args.max_rings,
@@ -73,8 +73,8 @@ if __name__ == "__main__":
     # --- Search Space Arguments ---
     parser.add_argument("--fixed", type=str, default=["rot3"], help="List of parameters to keep fixed during optimization")
     parser.add_argument("--center", type=str, required=True, help="Center of the search space")
-    parser.add_argument("--bounds", type=str, required=True, help="Per-parameter size of the search space around the center")
-    parser.add_argument("--resolution", type=str, required=True, help="Per-parameter resolution of the search space")
+    parser.add_argument("--bounds", type=str, required=True, help="Per-parameter bounds of the search space around the center")
+    parser.add_argument("--resolutions", type=str, required=True, help="Per-parameter resolutions of the search space")
 
     # --- Score Function ---
     parser.add_argument("--score", type=str, choices=["bragg", "residual", "intensity"], default="bragg", help="Score function to use for Bayesian Optimization.")
@@ -83,7 +83,6 @@ if __name__ == "__main__":
     parser.add_argument("--n_init", type=int, default=100, help="Number of initial samples")
     parser.add_argument("--n_iter", type=int, default=400, help="Number of bayesian optimization iterations")
     parser.add_argument("--max_rings", type=int, default=6, help="Maximum number of rings to use for scoring")
-    parser.add_argument("--rtol", type=float, default=1e-2, help="Relative tolerance in q-space for masking ring pixels")
     parser.add_argument("--beta", type=float, default=1.96, help="Exploration-exploitation trade-off parameter for UCB")
 
     # --- Random Arguments ---
@@ -94,5 +93,5 @@ if __name__ == "__main__":
     args.fixed = json.loads(args.fixed)
     args.center = json.loads(args.center)
     args.bounds = json.loads(args.bounds)
-    args.resolution = json.loads(args.resolution)
+    args.resolutions = json.loads(args.resolutions)
     main(args)

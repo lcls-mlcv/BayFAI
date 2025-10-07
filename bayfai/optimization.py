@@ -431,15 +431,20 @@ class BayFAIOpt:
         ttha_min = np.min(ttha)
         ttha_max = np.max(ttha)
 
-        tth = self.calibrant.get_2th()
+        tth = np.array(self.calibrant.get_2th())
         valid_rings = (tth >= ttha_min) & (tth <= ttha_max)
-        valid_tth = tth[valid_rings][:max_rings]
-        min_delta = np.min(np.diff(np.sort(valid_tth)))
+        expected_rings = tth[valid_rings][:max_rings]
+        min_ring_delta = np.min(np.diff(expected_rings))
+        min_resolution = np.min(np.diff(ttha))
+        min_delta = min_ring_delta / min_resolution
 
-        peaks = find_peaks(profile, distance=min_delta, prominence=1)
-        tth_peaks = ttha[peaks][:max_rings]
+        peaks, _ = find_peaks(profile, distance=min_delta, prominence=1)
+        observed_rings = ttha[peaks]
 
-        res = np.sum((tth_peaks - valid_tth) ** 2) / max_rings
+        if len(peaks) < max_rings:
+            expected_rings[:len(peaks)]
+
+        res = np.sum((observed_rings - expected_rings) ** 2) / max_rings
         return res
 
 
@@ -459,12 +464,14 @@ class BayFAIOpt:
         ttha_min = np.min(ttha)
         ttha_max = np.max(ttha)
 
-        tth = self.calibrant.get_2th()
+        tth = np.array(self.calibrant.get_2th())
         valid_rings = (tth >= ttha_min) & (tth <= ttha_max)
         valid_tth = tth[valid_rings][:max_rings]
-        min_delta = np.min(np.diff(np.sort(valid_tth)))
+        min_ring_delta = np.min(np.diff(valid_tth))
+        min_resolution = np.min(np.diff(ttha))
+        min_delta = min_ring_delta / min_resolution
 
-        peaks = find_peaks(profile, distance=min_delta, prominence=1)
+        peaks, _ = find_peaks(profile, distance=min_delta, prominence=1)
         rings = peaks[:max_rings]
 
         res = np.sum(profile[rings]) / max_rings
@@ -775,7 +782,7 @@ class BayFAIOpt:
         max_rings,
         score,
         out_dir,
-    )
+    ):
         """
         Run Grid Search on a fixed distance.
 
@@ -803,8 +810,8 @@ class BayFAIOpt:
         
         # 3. Save results
         filename = f"{self.exp}_r{self.run:04d}_score_{score}_dist_{str(dist).replace('.', '')}"
-        np.savez_compressed(f"{out_dir}/{filename}_scores.npz", history["scores"])
-        np.savez_compressed(f"{out_dir}/{filename}_params.npz", history["params"])
+        np.save(f"{out_dir}/{filename}.npy", history["scores"])
+        self.params = history["params"]
 
         return history
 
@@ -870,4 +877,6 @@ class BayFAIOpt:
             self.best_dist = best_dist
             self.best_score = best_score
             self.best_index = best_idx
+            filename = f"{self.exp}_r{self.run:04d}_params"
+            np.save(f"{out_dir}/{filename}.npy", self.scan[i]["params"])
             print("Grid Search finished!")
