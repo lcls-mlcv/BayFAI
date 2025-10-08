@@ -415,6 +415,64 @@ class BayFAIOpt:
         score = len(sg.geometry_refinement.data)
         return score
 
+    def theta_residual(self, sample, Imin, max_rings):
+        """
+        Evaluate score at a given sampled geometry based on the angular residuals of Bragg peaks.
+
+        Parameters
+        ----------
+        sample : list
+            Geometry parameters
+        Imin : float
+            Minimum intensity threshold
+        max_rings : int
+            Maximum number of rings to consider
+
+        Returns
+        -------
+        score : float
+            Scalar score for Bayesian optimization
+        """
+        dist, poni1, poni2, rot1, rot2, rot3 = sample
+        geom_sample = Geometry(
+            dist=dist,
+            poni1=poni1,
+            poni2=poni2,
+            rot1=rot1,
+            rot2=rot2,
+            rot3=rot3,
+            detector=self.detector,
+            wavelength=self.calibrant.wavelength,
+        )
+        sg = SingleGeometry(
+            "Score Geometry",
+            self.stacked_powder,
+            calibrant=self.calibrant,
+            detector=self.detector,
+            geometry=geom_sample,
+        )
+        sg.extract_cp(max_rings=max_rings, pts_per_deg=1, Imin=Imin)
+        data = sg.geometry_refinement.data
+
+        if len(data) == 0:
+            return 1e6
+
+        npt, ncol = data.shape
+        if ncol >= 3:
+            pos0 = data[:, 0]
+            pos1 = data[:, 1]
+            ring = data[:, 2].astype(np.int32)
+        if ncol == 4:
+            weight = data[:, 3]
+        else:
+            weight = None
+
+        free = ["dist", "poni1", "poni2", "rot1", "rot2", "rot3"]
+        const = {"wavelength": self.calibrant.wavelength}
+        param = np.array(sample)
+        res = sg.geometry_refinement.residu3(param, free, const, pos0, pos1, ring, weight) / npt
+        return res
+
     def q_residual(self, sample, max_rings):
         """
         Evaluate score at a given sampled geometry based on the q-peaks
@@ -616,6 +674,8 @@ class BayFAIOpt:
                 y[i] = self.number_bragg_peaks(X_samples[i], Imin, max_rings)
             elif score == "residual":
                 y[i] = -self.q_residual(X_samples[i], max_rings)
+            elif score == "theta_residual":
+                y[i] = -self.theta_residual(X_samples[i], Imin, max_rings)
             elif score == "intensity":
                 y[i] = self.ring_intensity(X_samples[i], max_rings)
             bo_history["params"].append(X_samples[i])
@@ -828,6 +888,8 @@ class BayFAIOpt:
                 y[i] = self.number_bragg_peaks(X[i], Imin, max_rings)
             elif score == "residual":
                 y[i] = -self.q_residual(X[i], max_rings)
+            elif score == "theta_residual":
+                y[i] = -self.theta_residual(X[i], Imin, max_rings)
             elif score == "intensity":
                 y[i] = self.ring_intensity(X[i], max_rings)
             history["params"].append(X[i])
