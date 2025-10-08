@@ -490,8 +490,8 @@ class BayFAIOpt:
             return 0.0
 
         score = 0.0
-        for ring in expected_rings:
-            mask = (ttha >= lower) & (ttha <= upper)
+        for i, ring in enumerate(expected_rings):
+            mask = (ttha >= lower[i]) & (ttha <= upper[i])
             peaks, _ = find_peaks(profile[mask], prominence=1)
             if len(peaks) == 0:
                 continue
