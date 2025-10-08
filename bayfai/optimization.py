@@ -418,7 +418,7 @@ class BayFAIOpt:
     def q_residual(self, sample, max_rings):
         """
         Evaluate score at a given sampled geometry based on the q-peaks
-        ßfound in the azimuthal integration.
+        found in the azimuthal integration.
 
         Parameters
         ----------
@@ -434,6 +434,10 @@ class BayFAIOpt:
         tth = np.array(self.calibrant.get_2th())
         valid_rings = (tth >= ttha_min) & (tth <= ttha_max)
         expected_rings = tth[valid_rings][:max_rings]
+
+        if len(expected_rings) == 0:
+            return 1e6
+
         min_ring_delta = np.min(np.diff(expected_rings))
         min_resolution = np.min(np.diff(ttha))
         min_delta = min_ring_delta / min_resolution
@@ -441,12 +445,15 @@ class BayFAIOpt:
         peaks, _ = find_peaks(profile, distance=min_delta, prominence=1)
         observed_rings = ttha[peaks][:max_rings]
 
-        if len(peaks) < max_rings:
-            expected_rings[:len(peaks)]
+        rings = min(len(observed_rings), len(expected_rings))
+        if rings == 0:
+            return 1e6
 
-        res = np.sum((observed_rings - expected_rings) ** 2) / max_rings
+        observed_rings = observed_rings[:rings]
+        expected_rings = expected_rings[:rings]
+
+        res = np.sum((observed_rings - expected_rings) ** 2) / rings
         return res
-
 
     def ring_intensity(self, sample, max_rings):
         """
@@ -465,17 +472,35 @@ class BayFAIOpt:
         ttha_max = np.max(ttha)
 
         tth = np.array(self.calibrant.get_2th())
+        tth_min = np.zeros_like(tth)
+        tth_max = np.zeros_like(tth)
+        delta = (tth[1:] - tth[:-1]) / 4.0
+        tth_max[:-1] = delta
+        tth_max[-1] = delta[-1]
+        tth_min[1:] = -delta
+        tth_min[0] = -delta[0]
+        tth_max += tth
+        tth_min += tth
         valid_rings = (tth >= ttha_min) & (tth <= ttha_max)
-        valid_tth = tth[valid_rings][:max_rings]
-        min_ring_delta = np.min(np.diff(valid_tth))
-        min_resolution = np.min(np.diff(ttha))
-        min_delta = min_ring_delta / min_resolution
+        expected_rings = tth[valid_rings][:max_rings]
+        lower = tth_min[valid_rings][:max_rings]
+        upper = tth_max[valid_rings][:max_rings]
 
-        peaks, _ = find_peaks(profile, distance=min_delta, prominence=1)
-        rings = peaks[:max_rings]
+        if len(expected_rings) == 0:
+            return 0.0
 
-        res = np.sum(profile[rings]) / max_rings
-        return res
+        score = 0.0
+        for ring in expected_rings:
+            mask = (ttha >= lower) & (ttha <= upper)
+            peaks, _ = find_peaks(profile[mask], prominence=1)
+            if len(peaks) == 0:
+                continue
+            else:
+                ring = np.argmax(profile[mask][peaks])
+                score += profile[mask][peaks][ring]
+
+        score /= len(expected_rings)
+        return score
 
 
     def pyFAI_score(self, best_param, Imin, max_rings):
