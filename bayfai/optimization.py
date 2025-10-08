@@ -16,7 +16,7 @@ from scipy.signal import find_peaks
 from mpi4py import MPI
 
 sys.path.append("/sdf/home/l/lconreux/LCLSGeom")
-from LCLSGeom.psana.converter import PsanaToPyFAI, PyFAIToPsana, PyFAIToCrystFEL
+from LCLSGeom.psana2.converter import PsanaToPyFAI, PyFAIToPsana, PyFAIToCrystFEL
 
 from bayfai.geometry import azimuthal_integration
 
@@ -192,7 +192,7 @@ class BayFAIOpt:
             Configured pyFAI detector object
         """
         psana_to_pyfai = PsanaToPyFAI(
-            in_file=in_file,
+            input=in_file,
         )
         detector = psana_to_pyfai.detector
         return detector
@@ -489,28 +489,32 @@ class BayFAIOpt:
         ttha_min = np.min(ttha)
         ttha_max = np.max(ttha)
 
-        tth = np.array(self.calibrant.get_2th())
-        valid_rings = (tth >= ttha_min) & (tth <= ttha_max)
-        expected_rings = tth[valid_rings][:max_rings]
+        expected_rings = np.array(self.calibrant.get_2th())
+        valid_rings = (expected_rings >= ttha_min) & (expected_rings <= ttha_max)
 
-        if len(expected_rings) == 0:
-            return 1e6
 
         min_ring_delta = np.min(np.diff(expected_rings))
         min_resolution = np.min(np.diff(ttha))
         min_delta = min_ring_delta / min_resolution
 
+        observed_rings = np.zeros_like(expected_rings)
         peaks, _ = find_peaks(profile, distance=min_delta, prominence=1)
-        observed_rings = ttha[peaks][:max_rings]
+        detected_rings = ttha[peaks]
 
-        rings = min(len(observed_rings), len(expected_rings))
-        if rings == 0:
-            return 1e6
+        num_rings = min(len(peaks), max_rings)
+        if num_rings == 0:
+            return np.sum((observed_rings - expected_rings) ** 2) / len(expected_rings)
 
-        observed_rings = observed_rings[:rings]
-        expected_rings = expected_rings[:rings]
+        ring_count = 0
+        for i, is_valid in enumerate(valid_rings):
+            if not is_valid:
+                continue
+            if ring_count >= num_rings:
+                break
+            observed_rings[i] = detected_rings[ring_count]
+            ring_count += 1
 
-        res = np.sum((observed_rings - expected_rings) ** 2) / rings
+        res = np.sum((observed_rings - expected_rings) ** 2) / len(expected_rings)
         return res
 
     def ring_intensity(self, sample, max_rings):
