@@ -16,7 +16,7 @@ from scipy.signal import find_peaks
 from mpi4py import MPI
 
 sys.path.append("/sdf/home/l/lconreux/LCLSGeom")
-from LCLSGeom.psana2.converter import PsanaToPyFAI, PyFAIToPsana, PyFAIToCrystFEL
+from LCLSGeom.psana.converter import PsanaToPyFAI, PyFAIToPsana, PyFAIToCrystFEL
 
 from bayfai.geometry import azimuthal_integration
 
@@ -192,7 +192,7 @@ class BayFAIOpt:
             Configured pyFAI detector object
         """
         psana_to_pyfai = PsanaToPyFAI(
-            input=in_file,
+            in_file=in_file,
         )
         detector = psana_to_pyfai.detector
         return detector
@@ -473,7 +473,7 @@ class BayFAIOpt:
         res = sg.geometry_refinement.residu3(param, free, const, pos0, pos1, ring, weight) / npt
         return res
 
-    def q_residual(self, sample, max_rings):
+    def q_residual(self, sample, Imin, max_rings):
         """
         Evaluate score at a given sampled geometry based on the q-peaks
         found in the azimuthal integration.
@@ -482,6 +482,8 @@ class BayFAIOpt:
         ----------
         sample: list
             Geometry Parameters
+        Imin: float
+            Minimum intensity threshold
         max_rings: int
             Maximum number of rings to consider
         """
@@ -492,13 +494,12 @@ class BayFAIOpt:
         expected_rings = np.array(self.calibrant.get_2th())
         valid_rings = (expected_rings >= ttha_min) & (expected_rings <= ttha_max)
 
-
         min_ring_delta = np.min(np.diff(expected_rings))
         min_resolution = np.min(np.diff(ttha))
         min_delta = min_ring_delta / min_resolution
 
         observed_rings = np.zeros_like(expected_rings)
-        peaks, _ = find_peaks(profile, distance=min_delta, prominence=1)
+        peaks, _ = find_peaks(profile, distance=min_delta, height=Imin, prominence=1)
         detected_rings = ttha[peaks]
 
         num_rings = min(len(peaks), max_rings)
@@ -517,15 +518,17 @@ class BayFAIOpt:
         res = np.sum((observed_rings - expected_rings) ** 2) / len(expected_rings)
         return res
 
-    def ring_intensity(self, sample, max_rings):
+    def ring_intensity(self, sample, Imin, max_rings):
         """
         Evaluate score at a given sampled geometry based on the mean intensity 
         of the found peaks in the azimuthal integration.
 
-        Paramters
-        ---------
+        Parameters
+        ----------
         sample: list
             Geometry Parameters
+        Imin: float
+            Minimum intensity threshold
         max_rings: int
             Maximum number of rings to consider
         """
@@ -554,7 +557,7 @@ class BayFAIOpt:
         score = 0.0
         for i, ring in enumerate(expected_rings):
             mask = (ttha >= lower[i]) & (ttha <= upper[i])
-            peaks, _ = find_peaks(profile[mask], prominence=1)
+            peaks, _ = find_peaks(profile[mask], height=Imin, prominence=1)
             if len(peaks) == 0:
                 continue
             else:
@@ -677,11 +680,11 @@ class BayFAIOpt:
             if score == "bragg":
                 y[i] = self.number_bragg_peaks(X_samples[i], Imin, max_rings)
             elif score == "residual":
-                y[i] = -self.q_residual(X_samples[i], max_rings)
+                y[i] = -self.q_residual(X_samples[i], Imin, max_rings)
             elif score == "theta_residual":
                 y[i] = -self.theta_residual(X_samples[i], Imin, max_rings)
             elif score == "intensity":
-                y[i] = self.ring_intensity(X_samples[i], max_rings)
+                y[i] = self.ring_intensity(X_samples[i], Imin, max_rings)
             bo_history["params"].append(X_samples[i])
             bo_history["scores"].append(y[i])
 
@@ -725,9 +728,11 @@ class BayFAIOpt:
             if score == "bragg":
                 yi = self.number_bragg_peaks(X_samples[i], Imin, max_rings)
             elif score == "residual":
-                yi = -self.q_residual(X_samples[i], max_rings)
+                yi = -self.q_residual(X_samples[i], Imin, max_rings)
+            elif score == "theta_residual":
+                yi = -self.theta_residual(X_samples[i], Imin, max_rings)
             elif score == "intensity":
-                yi = self.ring_intensity(X_samples[i], max_rings)
+                yi = self.ring_intensity(X_samples[i], Imin, max_rings)
             y = np.append(y, [yi], axis=0)
             bo_history["params"].append(next_sample)
             bo_history["scores"].append(yi)
@@ -891,11 +896,11 @@ class BayFAIOpt:
             if score == "bragg":
                 y[i] = self.number_bragg_peaks(X[i], Imin, max_rings)
             elif score == "residual":
-                y[i] = -self.q_residual(X[i], max_rings)
+                y[i] = -self.q_residual(X[i], Imin, max_rings)
             elif score == "theta_residual":
                 y[i] = -self.theta_residual(X[i], Imin, max_rings)
             elif score == "intensity":
-                y[i] = self.ring_intensity(X[i], max_rings)
+                y[i] = self.ring_intensity(X[i], Imin, max_rings)
             history["params"].append(X[i])
             history["scores"].append(y[i])
         
