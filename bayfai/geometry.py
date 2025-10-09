@@ -146,8 +146,9 @@ def azimuthal_integration(
         6 Geometry parameters: distance, x-shift, y-shift, Rx, Ry, Rz
     """
     tth = calculate_2theta(detector, params)
+    n_bins = len(tth.ravel()) / 200 # aim for ~200 counts per bin
     intensity, bin_edges = np.histogram(
-        tth.ravel(), bins=1000, range=(tth.min(), tth.max()), weights=powder.ravel()
+        tth.ravel(), bins=n_bins, range=(tth.min(), tth.max()), weights=powder.ravel()
     )
     count, _ = np.histogram(tth.ravel(), bins=bin_edges)
     radialprofile = np.divide(
