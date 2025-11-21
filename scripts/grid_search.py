@@ -74,7 +74,7 @@ if __name__ == "__main__":
     parser.add_argument("--resolutions", type=str, required=True, help="Per-parameter resolutions of the search space")
 
     # --- Score Function ---
-    parser.add_argument("--score", type=str, choices=["bragg", "residual", "intensity", "theta_residual"], default="bragg", help="Score function to use for Bayesian Optimization.")
+    parser.add_argument("--score", type=str, choices=["bragg", "residual", "residual_v2", "intensity", "theta_residual", "powder_residual"], default="bragg", help="Score function to use for Bayesian Optimization.")
 
     # --- BayFAI Hyperparameters ---
     parser.add_argument("--n_init", type=int, default=100, help="Number of initial samples")
