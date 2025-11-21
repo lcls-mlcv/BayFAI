@@ -13,6 +13,7 @@ from sklearn.gaussian_process.kernels import RBF, ConstantKernel, WhiteKernel
 from sklearn.utils._testing import ignore_warnings
 from sklearn.exceptions import ConvergenceWarning
 from scipy.signal import find_peaks
+from scipy.ndimage import gaussian_filter
 from mpi4py import MPI
 
 sys.path.append("/sdf/home/l/lconreux/LCLSGeom")
@@ -148,12 +149,18 @@ class BayFAIOpt:
             If True, apply smoothing to the powder image.
         """
         powder[powder < 0] = 0
-        if smooth:
-            for p in range(powder.shape[0]):
-                gradx = np.gradient(powder[p], axis=0)
-                grady = np.gradient(powder[p], axis=1)
-                powder[p] = np.sqrt(gradx**2 + grady**2)
+        powder_norm = np.zeros_like(powder)
+        powder_binary = np.zeros_like(powder)
+        for p in range(powder.shape[0]):
+            bkg = gaussian_filter(powder[p], sigma=24)
+            powder_norm[p] = powder[p] - bkg
+            mean = np.mean(powder_norm[p])
+            std = np.std(powder_norm[p])
+            powder_norm[p] = (powder_norm[p] - mean) / std
+            powder_binary[p][powder_norm[p] > 1.0] = 1.0
         powder[mask == 0] = 0
+        powder_binary[mask == 0] = 0
+        self.powder_binary = powder_binary
         return powder
 
     def generate_powder(
@@ -499,7 +506,11 @@ class BayFAIOpt:
         min_delta = min_ring_delta / min_resolution
 
         observed_rings = np.zeros_like(expected_rings)
-        peaks, _ = find_peaks(profile, distance=min_delta, height=Imin, prominence=1)
+        mean = np.mean(profile)
+        std = np.std(profile)
+        height = max(Imin, mean)
+        prominence = std
+        peaks, _ = find_peaks(profile, distance=min_delta, height=height, prominence=prominence)
         detected_rings = ttha[peaks]
 
         num_rings = min(len(peaks), max_rings)
@@ -539,7 +550,7 @@ class BayFAIOpt:
         tth = np.array(self.calibrant.get_2th())
         tth_min = np.zeros_like(tth)
         tth_max = np.zeros_like(tth)
-        delta = (tth[1:] - tth[:-1]) / 4.0
+        delta = (tth[1:] - tth[:-1]) / 10.0
         tth_max[:-1] = delta
         tth_max[-1] = delta[-1]
         tth_min[1:] = -delta
@@ -552,24 +563,65 @@ class BayFAIOpt:
         upper = tth_max[valid_rings][:max_rings]
 
         if len(expected_rings) == 0:
-            return 0.0
+            return 1
 
         res = 0.0
-        for i, expecting_ring in enumerate(expected_rings):
+        for i, expected_ring in enumerate(expected_rings):
             mask = (ttha >= lower[i]) & (ttha <= upper[i])
-            peaks, _ = find_peaks(profile[mask], height=Imin, prominence=1)
+            mean = np.mean(profile[mask])
+            if mean < Imin / 2:
+                continue
+            std = np.std(profile[mask])
+            height = max(Imin, mean)
+            prominence = std
+            peaks, _ = find_peaks(profile[mask], height=height, prominence=prominence)
             if len(peaks) == 0:
-                observed_ring = 0.0
+                res += expected_ring**2
             else:
-                ring = np.argmax(profile[mask][peaks])
-                observed_ring = ttha[mask][peaks][ring]
-            res += (observed_ring - expecting_ring) ** 2
+                observed_ring = ttha[mask][peaks]
+                expected_ring = np.tile(expected_ring, (len(observed_ring),))
+                res += np.sum((observed_ring - expected_ring) ** 2)
         res /= len(expected_rings)
         return res
 
+    def powder_residual(self, sample):
+        """
+        Evaluate the fitting quality of the refined parameters by comparing
+        the expected and observed ring positions.
+
+        Parameters
+        ----------
+        sample : list
+            Refined geometry parameters
+
+        Returns
+        -------
+        fit_score : float
+            Fitting quality score
+        """
+        theta = calculate_2theta(self.detector, sample)
+
+        fit = np.zeros_like(theta)
+        tth = np.array(self.calibrant.get_2th())
+        upper = np.zeros_like(tth)
+        lower = np.zeros_like(tth)
+        delta = (tth[1:] - tth[:-1]) / 10.0
+        upper[:-1] = delta
+        upper[-1] = delta[-1]
+        lower[1:] = -delta
+        lower[0] = -delta[0]
+        upper += tth
+        lower += tth
+
+        for i in range(len(tth)):
+            mask = (theta >= lower[i]) & (theta <= upper[i])
+            fit[mask] = 1.0
+        fit_score = np.sum((fit - self.powder_binary) ** 2) / len(fit.ravel())
+        return fit_score
+
     def ring_intensity(self, sample, Imin, max_rings):
         """
-        Evaluate score at a given sampled geometry based on the mean intensity 
+        Evaluate score at a given sampled geometry based on the mean intensity
         of the found peaks in the azimuthal integration.
 
         Parameters
@@ -588,7 +640,7 @@ class BayFAIOpt:
         tth = np.array(self.calibrant.get_2th())
         tth_min = np.zeros_like(tth)
         tth_max = np.zeros_like(tth)
-        delta = (tth[1:] - tth[:-1]) / 4.0
+        delta = (tth[1:] - tth[:-1]) / 10.0
         tth_max[:-1] = delta
         tth_max[-1] = delta[-1]
         tth_min[1:] = -delta
@@ -606,12 +658,17 @@ class BayFAIOpt:
         score = 0.0
         for i in range(len(expected_rings)):
             mask = (ttha >= lower[i]) & (ttha <= upper[i])
-            peaks, _ = find_peaks(profile[mask], height=Imin, prominence=1)
+            mean = np.mean(profile[mask])
+            if mean < Imin / 2:
+                continue
+            std = np.std(profile[mask])
+            height = max(Imin, mean)
+            prominence = std
+            peaks, _ = find_peaks(profile[mask], height=height, prominence=prominence)
             if len(peaks) == 0:
                 continue
             else:
-                ring = np.argmax(profile[mask][peaks])
-                score += profile[mask][peaks][ring]
+                score += np.min(profile[mask][peaks])
 
         score /= len(expected_rings)
         return score
@@ -728,6 +785,8 @@ class BayFAIOpt:
             if score == "bragg":
                 y[i] = self.number_bragg_peaks(X_samples[i], Imin, max_rings)
             elif score == "residual":
+                y[i] = -self.q_residual(X_samples[i], Imin, max_rings)
+            elif score == "residual_v2":
                 y[i] = -self.q_residual_v2(X_samples[i], Imin, max_rings)
             elif score == "theta_residual":
                 y[i] = -self.theta_residual(X_samples[i], Imin, max_rings)
@@ -776,6 +835,8 @@ class BayFAIOpt:
             if score == "bragg":
                 yi = self.number_bragg_peaks(X_samples[i], Imin, max_rings)
             elif score == "residual":
+                yi = -self.q_residual(X_samples[i], Imin, max_rings)
+            elif score == "residual_v2":
                 yi = -self.q_residual_v2(X_samples[i], Imin, max_rings)
             elif score == "theta_residual":
                 yi = -self.theta_residual(X_samples[i], Imin, max_rings)
@@ -944,11 +1005,15 @@ class BayFAIOpt:
             if score == "bragg":
                 y[i] = self.number_bragg_peaks(X[i], Imin, max_rings)
             elif score == "residual":
+                y[i] = -self.q_residual(X[i], Imin, max_rings)
+            elif score == "residual_v2":
                 y[i] = -self.q_residual_v2(X[i], Imin, max_rings)
             elif score == "theta_residual":
                 y[i] = -self.theta_residual(X[i], Imin, max_rings)
             elif score == "intensity":
                 y[i] = self.ring_intensity(X[i], Imin, max_rings)
+            elif score == "powder_residual":
+                y[i] = -self.powder_residual(X[i])
             history["params"].append(X[i])
             history["scores"].append(y[i])
         

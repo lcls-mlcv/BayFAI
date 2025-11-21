@@ -1,7 +1,8 @@
 import numpy as np
 import numpy.typing as npt
-import pyFAI
 from typing import Optional
+import pyFAI
+from scipy.ndimage import gaussian_filter1d
 
 def rotation_matrix(params: list) -> np.ndarray:
     """
@@ -96,7 +97,7 @@ def calculate_2theta(
     Calculate the 2θ angles for the detector based on the geometry parameters.
 
     Parameters
-    ----------
+    ----------3
     detector : pyFAI.detectors.Detector
         PyFAI detector object containing pixel coordinates to be corrected.
     params : list, optional
@@ -146,7 +147,7 @@ def azimuthal_integration(
         6 Geometry parameters: distance, x-shift, y-shift, Rx, Ry, Rz
     """
     tth = calculate_2theta(detector, params)
-    n_bins = len(tth.ravel()) / 200 # aim for ~200 counts per bin
+    n_bins = round(len(tth.ravel()) / 4000) # aim for ~4000 pixels per bin
     intensity, bin_edges = np.histogram(
         tth.ravel(), bins=n_bins, range=(tth.min(), tth.max()), weights=powder.ravel()
     )
@@ -154,6 +155,7 @@ def azimuthal_integration(
     radialprofile = np.divide(
         intensity, count, out=np.zeros_like(intensity), where=count != 0
     )
+    radialprofile = gaussian_filter1d(radialprofile, sigma=2)
     tth_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
     return radialprofile, tth_centers
 
