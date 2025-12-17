@@ -34,7 +34,7 @@ Once the experiment is ready to collect a geometry calibration run, and the user
     TW: this script requires the user to have an active kerberos authentification ticket to be able to populate the eLog. You can check if you have an active ticket by running `klist` in your terminal.
     If you don't have one, before running `setup_lute`, run `kinit` in your terminal and give your unix password.
     ```bash
-    (base) [lconreux@sdfiana002 ~] /sdf/group/lcls/ds/tools/lute/dev/lute/utilities/setup_lute -e <experiment> -f --directory bayfai -w bayfai --test --nodes=1
+    (base) [lconreux@sdfiana002 ~] /sdf/group/lcls/ds/tools/lute/dev/lute/utilities/setup_lute -e <experiment> -f --directory=bayfai -w bayfai --test --nodes=1
     ```
     ___Nota Bene___: The script will prompt you three times (for partition, account, and number of tasks). Simply press Enter each time to accept the default settings.
 
