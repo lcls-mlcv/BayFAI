@@ -24,7 +24,7 @@ BayFAI:
   fixed:
   - rot2
   - rot3
-  in_file: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/geom/mecl1048423/0-end_Q2.data
+  in_file: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/BayFAI/benchmark/geom/mecl1048423/0-end_Q2.data
   out_file: ../tests/v2/test_mec_1/geom/mecl1048423/171-end_Q2.data
   powder: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/powder/mecl1048423_Run0171.h5
   preprocess: false

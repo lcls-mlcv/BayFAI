@@ -25,7 +25,7 @@ BayFAI:
   - rot1
   - rot2
   - rot3
-  in_file: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/geom/mfx100824024/0-end.data
+  in_file: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/BayFAI/benchmark/geom/mfx100824024/0-end.data
   out_file: ../tests/v2/test_mfx_psana1_24/geom/mfx100824024/5-end.data
   powder: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/powder/mfx100824024_Run0005.h5
   preprocess: false

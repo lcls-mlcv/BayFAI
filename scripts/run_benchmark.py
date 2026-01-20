@@ -27,13 +27,15 @@ def main(args):
     seed = args.seed
     max_rings = args.max_rings
     smooth = args.smooth
+    work_dir = Path.cwd()
     yaml_folder = Path(f"../BayFAI/benchmark/yamls/{hutch}")
-    yamls = yaml_folder.glob("*.yaml")
-    work_dir = Path("../tests")
+    powder_folder = Path(f"../BayFAI/benchmark/powder")
+    results_folder = work_dir / "results"
     test_folder_name = f"test_{hutch}_{seed}"
-    test_folder = work_dir / test_folder_name
+    test_folder = results_folder / test_folder_name
     test_folder.mkdir(parents=True, exist_ok=True)
 
+    yamls = yaml_folder.glob("*.yaml")
     for config_path in yamls:
         with open(config_path, "r") as f:
             config = list(yaml.safe_load_all(f))
@@ -58,7 +60,7 @@ def main(args):
                     doc['BayFAI']['out_file'] = f"{geom_folder}/{run}-end_Q{quad}.data"
                 else:
                     doc['BayFAI']['out_file'] = f"{geom_folder}/{run}-end.data"
-                doc['BayFAI']['powder'] = f'/sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/powder/{exp}_Run{run:0>4}.h5'
+                doc['BayFAI']['powder'] = f"{powder_folder}/{exp}_Run{run:0>4}.npy"
                 doc['BayFAI']['preprocess'] = smooth
                 doc['BayFAI']['bo_params']['n_samples'] = 20
                 doc['BayFAI']['bo_params']['n_iterations'] = 80

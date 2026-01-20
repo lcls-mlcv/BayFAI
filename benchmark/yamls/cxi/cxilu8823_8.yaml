@@ -25,7 +25,7 @@ BayFAI:
   - rot1
   - rot2
   - rot3
-  in_file: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/geom/cxilu8823/0-end.data
+  in_file: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/BayFAI/benchmark/geom/cxilu8823/0-end.data
   out_file: ../tests/v2/test_cxi_10/geom/cxilu8823/8-end.data
   powder: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/powder/cxilu8823_Run0008.h5
   preprocess: false
