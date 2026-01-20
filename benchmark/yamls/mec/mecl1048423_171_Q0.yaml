@@ -1,0 +1,37 @@
+date: 2023/10/25
+experiment: mecl1048423
+lute_version: 0.1
+run: 171
+task_timeout: 1200
+title: LUTE Task Configuration
+work_dir: ../tests/v2/test_mec_1
+---
+BayFAI:
+  bo_params:
+    max_rings: 20
+    n_iterations: 80
+    n_samples: 20
+    seed: null
+  calibrant: CeO2
+  center:
+    dist: 0.28
+    poni1: 0.06
+    poni2: 0.06
+    rot1: 0.0
+    rot2: -0.6
+    rot3: 0.0
+  detname: Epix10kaQuad0
+  fixed:
+  - rot1
+  - rot3
+  in_file: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/geom/mecl1048423/0-end_Q0.data
+  out_file: ../tests/v2/test_mec_1/geom/mecl1048423/171-end_Q0.data
+  powder: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/powder/mecl1048423_Run0171.h5
+  preprocess: false
+  resolutions:
+    dist: 0.0001
+    poni1: 0.0001
+    poni2: 0.0001
+    rot1: 0.01
+    rot2: 0.01
+    rot3: 0.01

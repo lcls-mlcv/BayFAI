@@ -17,7 +17,6 @@ from scipy.ndimage import gaussian_filter
 from mpi4py import MPI
 
 sys.path.append("/sdf/home/l/lconreux/LCLSGeom")
-from LCLSGeom.psana.converter import PsanaToPyFAI, PyFAIToPsana, PyFAIToCrystFEL
 
 from bayfai.geometry import azimuthal_integration, calculate_2theta
 
@@ -73,6 +72,7 @@ class BayFAIOpt:
         wavelength: float,
         fixed: list,
         in_file: str,
+        is_psana2: bool = False,
     ):
         """
         Setup the BayFAI optimization.
@@ -87,22 +87,25 @@ class BayFAIOpt:
             If True, apply smoothing to the powder image
         calibrant : PyFAI.Calibrant
             PyFAI calibrant object
-        wavelength: float
-            X-ray beam wavelength
+        wavelength : float
+            Wavelength of the X-ray source
         fixed : list
             List of parameters to keep fixed during optimization
         in_file : str
             Path to the input geometry file
+        is_psana2 : bool
+            If True, use psana2 geometry conversion
 
         Returns
         -------
         Imin : float
             Minimum intensity value for identifying Bragg peaks
         """
-        self.detector = self.build_detector(in_file)
-        self.powder = self.generate_powder(powder, detname, smooth)
+        self.detector = self.build_detector(in_file, is_psana2)
+        self.powder = self.generate_powder(powder, detname, smooth, is_psana2)
         self.stacked_powder = np.reshape(self.powder, self.detector.shape)
-        self.Imin = np.percentile(self.powder, 95)
+        pos_pix = self.powder[self.powder > 0]
+        self.Imin = np.percentile(pos_pix, 95)
         self.calibrant = self.define_calibrant(calibrant, wavelength)
         self.set_search_space(fixed)
 
@@ -125,9 +128,15 @@ class BayFAIOpt:
                 powder = h5[f"Sums/{detname}_calib_max"][()]
             except KeyError:
                 print(
-                    f"Cannot find {detname} Max powder in {powder_path}, defaulting to {detname} Sum instead.", flush=True,
+                    f"Cannot find {detname} Max powder in {powder_path}, defaulting to {detname} Sum instead."
                 )
-                powder = h5[f"Sums/{detname}_calib"][()]
+                try:
+                    powder = h5[f"Sums/{detname}_calib"][()]
+                except KeyError:
+                    print(
+                        f"Cannot find {detname} Sum powder in {powder_path}. Exiting..."
+                    )
+                    raise
         return powder
 
     def preprocess_powder(
@@ -149,22 +158,38 @@ class BayFAIOpt:
             If True, apply smoothing to the powder image.
         """
         powder[powder < 0] = 0
-        powder_norm = np.zeros_like(powder)
-        powder_binary = np.zeros_like(powder)
-        for p in range(powder.shape[0]):
-            bkg = gaussian_filter(powder[p], sigma=24)
-            powder_norm[p] = powder[p] - bkg
-            mean = np.mean(powder_norm[p])
-            std = np.std(powder_norm[p])
-            powder_norm[p] = (powder_norm[p] - mean) / std
-            powder_binary[p][powder_norm[p] > 1.0] = 1.0
+        if smooth:
+            for p in range(powder.shape[0]):
+                gradx = np.gradient(powder[p], axis=0)
+                grady = np.gradient(powder[p], axis=1)
+                powder[p] = np.sqrt(gradx**2 + grady**2)
         powder[mask == 0] = 0
-        powder_binary[mask == 0] = 0
-        self.powder_binary = powder_binary
+        self.powder_binary = (np.where(powder > np.mean(powder) + np.std(powder), 1.0, 0.0)).astype(np.float64)
         return powder
+    
+    def assemble_image(
+        self, powder: npt.NDArray[np.float64]
+    ) -> npt.NDArray[np.float64]:
+        """
+        Assemble the powder image from modules to full detector shape.
+
+        Parameters
+        ----------
+        powder : npt.NDArray[np.float64]
+            Powder image to use for calibration
+        """
+        pixel_index_map = self.detector.pixel_index_map
+        max_rows = np.max(pixel_index_map[..., 0]) + 1
+        max_cols = np.max(pixel_index_map[..., 1]) + 1
+        assembled_powder = np.zeros((max_rows, max_cols))
+        for p in range(pixel_index_map.shape[0]):
+            i = pixel_index_map[p, ..., 0]
+            j = pixel_index_map[p, ..., 1]
+            assembled_powder[i, j] = powder[p]
+        return assembled_powder
 
     def generate_powder(
-        self, powder_path: str, detname: str, smooth: bool = False
+        self, powder_path: str, detname: str, smooth: bool = False, is_psana2: bool = False,
     ) -> npt.NDArray[np.float64]:
         """
         Generate a preprocessed powder image from smalldata reduction.
@@ -179,12 +204,14 @@ class BayFAIOpt:
             If True, apply smoothing to the powder image.
         """
         mask = self.detector.geo.get_pixel_mask(mbits=3)
-        mask = np.squeeze(mask, axis=0)
+        if not is_psana2:
+            mask = np.squeeze(mask, axis=0)
         powder = self.extract_powder(powder_path, detname)
         powder = self.preprocess_powder(powder, mask, smooth)
+        self.assembled_powder = self.assemble_image(powder)
         return powder
 
-    def build_detector(self, in_file: str) -> pyFAI.detectors.Detector:
+    def build_detector(self, in_file: str, is_psana2: bool) -> pyFAI.detectors.Detector:
         """
         Read the metrology data and build a pyFAI detector object.
 
@@ -192,46 +219,75 @@ class BayFAIOpt:
         ----------
         in_file : str
             Path to the Geometry .data file
+        is_psana2 : bool
+            If True, use psana2 geometry conversion
 
         Returns
         -------
         pyFAI.Detector
             Configured pyFAI detector object
         """
-        psana_to_pyfai = PsanaToPyFAI(
-            in_file=in_file,
-        )
+        if is_psana2:
+            from LCLSGeom.psana2.converter import PsanaToPyFAI
+            psana_to_pyfai = PsanaToPyFAI(
+                input=in_file,
+            )
+        else:
+            from LCLSGeom.psana.converter import PsanaToPyFAI
+            psana_to_pyfai = PsanaToPyFAI(
+                in_file=in_file,
+            )
         detector = psana_to_pyfai.detector
         return detector
 
-    def update_geometry(self, out_file: str) -> pyFAI.detectors.Detector:
+    def update_geometry(self, out_file: str, is_psana2: bool) -> pyFAI.detectors.Detector:
         """
         Update the geometry and write a new .poni, .geom and .data file
 
         Parameters
         ----------
-        optimizer : BayesGeomOpt
-            Optimizer object
         out_file : str
             Path to the output file
+        is_psana2 : bool
+            If True, use psana2 geometry conversion
         """
         path = os.path.dirname(out_file)
         poni_file = os.path.join(path, f"r{self.run:0>4}.poni")
         self.gr.save(poni_file)
-        PyFAIToPsana(
-            in_file=poni_file,
-            detector=self.detector,
-            out_file=out_file,
-        )
-        geom_file = os.path.join(path, f"r{self.run:0>4}.geom")
-        PyFAIToCrystFEL(
-            in_file=poni_file,
-            detector=self.detector,
-            out_file=geom_file,
-        )
-        psana_to_pyfai = PsanaToPyFAI(
-            in_file=out_file,
-        )
+        if is_psana2:
+            from LCLSGeom.psana2.converter import PyFAIToPsana, PyFAIToCrystFEL, PsanaToPyFAI
+            PyFAIToPsana(
+                in_file=poni_file,
+                detector=self.detector,
+                out_file=out_file,
+            )
+            geom_file = os.path.join(path, f"r{self.run:0>4}.geom")
+            PyFAIToCrystFEL(
+                in_file=poni_file,
+                detector=self.detector,
+                out_file=geom_file,
+            )
+            psana_to_pyfai = PsanaToPyFAI(
+                input=out_file,
+                rotate=False,
+            )
+        else:
+            from LCLSGeom.psana.converter import PyFAIToPsana, PyFAIToCrystFEL, PsanaToPyFAI
+            PyFAIToPsana(
+                in_file=poni_file,
+                detector=self.detector,
+                out_file=out_file,
+            )
+            geom_file = os.path.join(path, f"r{self.run:0>4}.geom")
+            PyFAIToCrystFEL(
+                in_file=poni_file,
+                detector=self.detector,
+                out_file=geom_file,
+            )
+            psana_to_pyfai = PsanaToPyFAI(
+                in_file=out_file,
+                rotate=False,
+            )
         detector = psana_to_pyfai.detector
         return detector
 
@@ -260,6 +316,7 @@ class BayFAIOpt:
         fixed : list
             List of parameters to keep fixed during optimization
         """
+        self.fixed = fixed
         self.space = []
         parallelized = ["dist"]
         self.order = ["dist", "poni1", "poni2", "rot1", "rot2", "rot3"]
@@ -283,10 +340,10 @@ class BayFAIOpt:
         dist : float
             The distance assigned to this MPI rank
         """
-        low = center["dist"] - res["dist"] * self.size / 2
-        high = center["dist"] + res["dist"] * self.size / 2
-        distances = np.linspace(low, high - res["dist"], self.size)
-        distances = np.round(distances * 10000, decimals=0) / 10000
+        half = self.size // 2
+        offsets = (np.arange(self.size) - half) * res["dist"]
+        distances = center["dist"] + offsets
+        distances = np.round(distances, 6)
         self.distances = distances
         dist = distances[self.rank]
         return dist
@@ -311,7 +368,7 @@ class BayFAIOpt:
         X : np.ndarray
             Full 6D geometry space (cartesian product)
         X_norm : np.ndarray
-            Normalized search space (between -1 and 1)
+            Normalized search space (between-1 and 1)
         """
         center["dist"] = dist
         full_params = {}
@@ -424,7 +481,7 @@ class BayFAIOpt:
 
     def theta_residual(self, sample, Imin, max_rings):
         """
-        Evaluate score at a given sampled geometry based on the angular residuals of Bragg peaks.
+        Evaluate score at a given sampled geometry based on the residual between predicted and observed Bragg peak positions.
 
         Parameters
         ----------
@@ -461,24 +518,14 @@ class BayFAIOpt:
         sg.extract_cp(max_rings=max_rings, pts_per_deg=1, Imin=Imin)
         data = sg.geometry_refinement.data
 
-        if len(data) == 0:
-            return 1e6
+        if data is None or len(data) == 0:
+            return 0.0
 
-        npt, ncol = data.shape
-        if ncol >= 3:
-            pos0 = data[:, 0]
-            pos1 = data[:, 1]
-            ring = data[:, 2].astype(np.int32)
-        if ncol == 4:
-            weight = data[:, 3]
-        else:
-            weight = None
-
-        free = ["dist", "poni1", "poni2", "rot1", "rot2", "rot3"]
-        const = {"wavelength": self.calibrant.wavelength}
-        param = np.array(sample)
-        res = sg.geometry_refinement.residu3(param, free, const, pos0, pos1, ring, weight) / npt
-        return res
+        ix = data[:, 0]
+        iy = data[:, 1]
+        ring = data[:, 2].astype(np.int32)
+        score = -np.log(sg.geometry_refinement.residu2(sample, ix, iy, ring) / len(data))
+        return score
 
     def q_residual(self, sample, Imin, max_rings):
         """
@@ -527,7 +574,8 @@ class BayFAIOpt:
             ring_count += 1
 
         res = np.sum((observed_rings - expected_rings) ** 2) / len(expected_rings)
-        return res
+        score = -np.log(res)
+        return score
 
     def q_residual_v2(self, sample, Imin, max_rings):
         """
@@ -569,12 +617,9 @@ class BayFAIOpt:
         for i, expected_ring in enumerate(expected_rings):
             mask = (ttha >= lower[i]) & (ttha <= upper[i])
             mean = np.mean(profile[mask])
-            if mean < Imin / 2:
-                continue
             std = np.std(profile[mask])
             height = max(Imin, mean)
-            prominence = std
-            peaks, _ = find_peaks(profile[mask], height=height, prominence=prominence)
+            peaks, _ = find_peaks(profile[mask], height=height, prominence=std)
             if len(peaks) == 0:
                 res += expected_ring**2
             else:
@@ -582,7 +627,8 @@ class BayFAIOpt:
                 expected_ring = np.tile(expected_ring, (len(observed_ring),))
                 res += np.sum((observed_ring - expected_ring) ** 2)
         res /= len(expected_rings)
-        return res
+        score = -np.log(res)
+        return score
 
     def powder_residual(self, sample):
         """
@@ -616,8 +662,9 @@ class BayFAIOpt:
         for i in range(len(tth)):
             mask = (theta >= lower[i]) & (theta <= upper[i])
             fit[mask] = 1.0
-        fit_score = np.sum((fit - self.powder_binary) ** 2) / len(fit.ravel())
-        return fit_score
+        fit_score = np.mean((fit - self.powder_binary) ** 2)
+        score = -np.log(fit_score)
+        return score
 
     def ring_intensity(self, sample, Imin, max_rings):
         """
@@ -659,12 +706,9 @@ class BayFAIOpt:
         for i in range(len(expected_rings)):
             mask = (ttha >= lower[i]) & (ttha <= upper[i])
             mean = np.mean(profile[mask])
-            if mean < Imin / 2:
-                continue
             std = np.std(profile[mask])
             height = max(Imin, mean)
-            prominence = std
-            peaks, _ = find_peaks(profile[mask], height=height, prominence=prominence)
+            peaks, _ = find_peaks(profile[mask], height=height, prominence=std)
             if len(peaks) == 0:
                 continue
             else:
@@ -673,7 +717,95 @@ class BayFAIOpt:
         score /= len(expected_rings)
         return score
 
-    def pyFAI_score(self, best_param, Imin, max_rings):
+    def estimate_uncertainty(self, refinement, rel_eps=1e-3, abs_eps=1e-4):
+        """
+        Estimate parameter uncertainties from the Hessian matrix.
+
+        Parameters
+        ----------
+        refinement : GeometryRefinement
+            pyFAI refinement object after refine3.
+        rel_eps : float
+            Relative step for finite differences.
+        abs_eps : float
+            Absolute step for finite differences.
+
+        Returns
+        -------
+        sigmas : np.ndarray
+            Estimated uncertainties for each parameter
+        is_min : bool
+            True if a local minimum was found
+        """
+        param0 = np.array(
+            [
+                refinement.dist,
+                refinement.poni1,
+                refinement.poni2,
+                refinement.rot1,
+                refinement.rot2,
+                refinement.rot3,
+            ],
+            dtype=np.float64,
+        )
+        param_names = ["dist", "poni1", "poni2", "rot1", "rot2"]
+        size = len(param_names)
+
+        d1 = refinement.data[:, 0]
+        d2 = refinement.data[:, 1]
+        ring = refinement.data[:, 2].astype(np.int32)
+        f_min = refinement.residu2(param0, d1, d2, ring)
+        hessian = np.zeros((size, size), dtype=np.float64)
+        dof = max(len(refinement.data) - size, 1)
+
+        delta = np.maximum(rel_eps * np.abs(param0), abs_eps)
+        for i in range(size):
+            deltai = delta[i]
+            param = param0.copy()
+            param[i] += deltai
+            f_plus = refinement.residu2(param, d1, d2, ring)
+            param = param0.copy()
+            param[i] -= deltai
+            f_minus = refinement.residu2(param, d1, d2, ring)
+            hessian[i, i] = (f_plus + f_minus - 2.0 * f_min) / (deltai**2)
+
+            for j in range(i + 1, size):
+                deltaj = delta[j]
+                param = param0.copy()
+                param[i] += deltai
+                param[j] += deltaj
+                f_pp = refinement.residu2(param, d1, d2, ring)
+                param = param0.copy()
+                param[i] -= deltai
+                param[j] -= deltaj
+                f_mm = refinement.residu2(param, d1, d2, ring)
+                param = param0.copy()
+                param[i] += deltai
+                param[j] -= deltaj
+                f_pm = refinement.residu2(param, d1, d2, ring)
+                param = param0.copy()
+                param[i] -= deltai
+                param[j] += deltaj
+                f_mp = refinement.residu2(param, d1, d2, ring)
+                hessian[j, i] = hessian[i, j] = (f_pp + f_mm - f_pm - f_mp) / (
+                    4.0 * deltai * deltaj
+                )
+
+        eigs, _ = np.linalg.eigh(hessian)
+        if np.any(eigs <= 0):
+            sigmas = [np.inf] * size
+            is_min = False
+            penalty = 0.0
+            return sigmas, is_min, penalty
+
+        cov = np.linalg.inv(hessian)
+        sigmas = f_min * np.diag(cov) / dof
+        sigmas = np.sqrt(sigmas)
+        is_min = True
+        penalty = -np.log(np.linalg.det(cov)) / 2 
+        return sigmas, is_min, penalty
+
+    def gradient_descent(self, best_param, resolutions, Imin, max_rings, step=5):
         """
         Evaluate geometry found by BO on pyFAI refinement tool
 
@@ -681,19 +813,29 @@ class BayFAIOpt:
         ----------
         best_param : list
             Best parameters found by Bayesian optimization
+        resolutions : dict
+            Resolution per parameter for restricted refinement
         Imin : float
             Minimum intensity threshold
         max_rings : int
             Maximum number of rings to consider
+        step : int
+            Size of the refinement space around best parameters
 
         Returns
         -------
-        residual : float
-            Residual error after refinement
         score : float
-            BO Score of the refined parameters
+            Negative log of the residual after refinement
+        sigma : np.ndarray
+            Estimated uncertainties for each parameter
+        penalty : float
+            Penalty from uncertainty estimation
+        size : int
+            Number of Bragg peaks used in refinement
         params : dict
             Refined parameters
+        is_min : bool
+            Flag indicating if a local minimum was found
         """
         dist, poni1, poni2, rot1, rot2, rot3 = best_param
         best_geom = Geometry(
@@ -715,12 +857,31 @@ class BayFAIOpt:
         )
         sg.extract_cp(max_rings=max_rings, pts_per_deg=1, Imin=Imin)
         self.sg = sg
-        residual = 0
-        if len(sg.geometry_refinement.data) > 0:
-            residual = sg.geometry_refinement.refine3(fix=["wavelength"])
+
+        if sg.geometry_refinement.data is None or len(sg.geometry_refinement.data) == 0:
+            score = 0.0
+            sigma = [np.inf] * 5
+            penalty = 0.0
+            size = 0
+            is_min = False
+            return score, sigma, penalty, size, best_param, is_min
+
+        sg.geometry_refinement.set_dist_min(dist - step * resolutions["dist"])
+        sg.geometry_refinement.set_dist_max(dist + step * resolutions["dist"])
+        sg.geometry_refinement.set_poni1_min(poni1 - step * resolutions["poni1"])
+        sg.geometry_refinement.set_poni1_max(poni1 + step * resolutions["poni1"])
+        sg.geometry_refinement.set_poni2_min(poni2 - step * resolutions["poni2"])
+        sg.geometry_refinement.set_poni2_max(poni2 + step * resolutions["poni2"])
+        sg.geometry_refinement.set_rot1_min(rot1 - step * resolutions["rot1"])
+        sg.geometry_refinement.set_rot1_max(rot1 + step * resolutions["rot1"])
+        sg.geometry_refinement.set_rot2_min(rot2 - step * resolutions["rot2"])
+        sg.geometry_refinement.set_rot2_max(rot2 + step * resolutions["rot2"])
+        fix = ["rot3", "wavelength"]
+        score = -np.log(sg.geometry_refinement.refine3(fix=fix))
+        sigma, is_min, penalty = self.estimate_uncertainty(sg.geometry_refinement)
         params = sg.geometry_refinement.param
-        score = self.number_bragg_peaks(params, Imin, max_rings)
-        return residual, score, params
+        size = len(sg.geometry_refinement.data)
+        return score, sigma, penalty, size, params, is_min
 
     @ignore_warnings(category=ConvergenceWarning)
     def bayes_opt_distance(
@@ -735,8 +896,9 @@ class BayFAIOpt:
         Imin,
         max_rings,
         beta=1.96,
+        step=5,
         prior=True,
-        seed=0,
+        seed=None,
     ):
         """
         Run Bayesian Optimization on a subspace of fixed distance.
@@ -752,7 +914,7 @@ class BayFAIOpt:
         res : dict
             Dictionary of resolution for each parameter
         score : str
-            Score function to use
+            Scoring method to use: 'bragg', 'residual', 'residual_v2', 'theta_residual', 'intensity'
         n_samples : int
             Number of samples to initialize the Gaussian Process
         n_iterations : int
@@ -763,12 +925,15 @@ class BayFAIOpt:
             Maximum number of rings to search for Bragg peaks
         beta : float
             Exploration-exploitation trade-off parameter for UCB acquisition function
+        step : int
+            Size of the refinement space around best parameters
         prior : bool
             Whether to sample initial points around the center or randomly
-        seed : int
+        seed : optional, int
             Random seed for reproducibility
         """
-        np.random.seed(seed)
+        if seed is not None:
+            np.random.seed(seed)
 
         # 1. Create the search space
         X, X_norm = self.create_search_space(dist, center, bounds, res)
@@ -785,23 +950,26 @@ class BayFAIOpt:
             if score == "bragg":
                 y[i] = self.number_bragg_peaks(X_samples[i], Imin, max_rings)
             elif score == "residual":
-                y[i] = -self.q_residual(X_samples[i], Imin, max_rings)
+                y[i] = self.q_residual(X_samples[i], Imin, max_rings)
             elif score == "residual_v2":
-                y[i] = -self.q_residual_v2(X_samples[i], Imin, max_rings)
+                y[i] = self.q_residual_v2(X_samples[i], Imin, max_rings)
             elif score == "theta_residual":
-                y[i] = -self.theta_residual(X_samples[i], Imin, max_rings)
+                y[i] = self.theta_residual(X_samples[i], Imin, max_rings)
             elif score == "intensity":
                 y[i] = self.ring_intensity(X_samples[i], Imin, max_rings)
             bo_history["params"].append(X_samples[i])
             bo_history["scores"].append(y[i])
 
-        if np.all(y == 0):
+        if np.all(y == 0.0):
             result = {
                 "bo_history": bo_history,
                 "params": [dist, 0, 0, 0, 0, 0],
-                "residual": 0,
-                "score": 0,
+                "score": 0.0,
+                "sigma": [np.inf] * 5,
+                "penalty": 0.0,
+                "size": 0,
                 "best_idx": 0,
+                "is_min": False,
             }
             print(
                 f"All samples have score 0 for dist={dist}. Skipping Bayesian Optimization.", flush=True,
@@ -835,11 +1003,11 @@ class BayFAIOpt:
             if score == "bragg":
                 yi = self.number_bragg_peaks(X_samples[i], Imin, max_rings)
             elif score == "residual":
-                yi = -self.q_residual(X_samples[i], Imin, max_rings)
+                yi = self.q_residual(X_samples[i], Imin, max_rings)
             elif score == "residual_v2":
-                yi = -self.q_residual_v2(X_samples[i], Imin, max_rings)
+                yi = self.q_residual_v2(X_samples[i], Imin, max_rings)
             elif score == "theta_residual":
-                yi = -self.theta_residual(X_samples[i], Imin, max_rings)
+                yi = self.theta_residual(X_samples[i], Imin, max_rings)
             elif score == "intensity":
                 yi = self.ring_intensity(X_samples[i], Imin, max_rings)
             y = np.append(y, [yi], axis=0)
@@ -858,16 +1026,21 @@ class BayFAIOpt:
         # 9. Gather results
         best_idx = np.argmax(y)
         best_param = X_samples[best_idx]
-        residual, score, params = self.pyFAI_score(best_param, Imin, max_rings)
+        score, sigma, penalty, size, params, is_min = self.gradient_descent(
+            best_param, res, Imin, max_rings, step
+        )
         print(
-            f"Rank {self.rank} dist={dist:.4f}m: score={score}, residual={residual:3e}", flush=True,
+            f"Rank {self.rank} dist={dist:.4f}m: score={score}", flush=True,
         )
         result = {
             "bo_history": bo_history,
             "params": params,
-            "residual": residual,
             "score": score,
+            "sigma": sigma,
+            "penalty": penalty,
+            "size": size,
             "best_idx": best_idx,
+            "is_min": is_min,
         }
         return result
 
@@ -880,8 +1053,9 @@ class BayFAIOpt:
         n_iterations,
         max_rings,
         beta=1.96,
+        step=5,
         prior=True,
-        seed=0,
+        seed=None,
         score="bragg",
     ):
         """
@@ -925,6 +1099,7 @@ class BayFAIOpt:
             "Imin": self.Imin,
             "max_rings": max_rings,
             "beta": beta,
+            "step": step,
             "prior": prior,
             "seed": seed,
         }
@@ -943,27 +1118,29 @@ class BayFAIOpt:
         self.scan = {}
         self.scan["bo_history"] = self.comm.gather(results["bo_history"], root=0)
         self.scan["params"] = self.comm.gather(results["params"], root=0)
-        self.scan["residual"] = self.comm.gather(results["residual"], root=0)
         self.scan["score"] = self.comm.gather(results["score"], root=0)
+        self.scan["size"] = self.comm.gather(results["size"], root=0)
+        self.scan["sigma"] = self.comm.gather(results["sigma"], root=0)
+        self.scan["penalty"] = self.comm.gather(results["penalty"], root=0)
         self.scan["best_idx"] = self.comm.gather(results["best_idx"], root=0)
+        self.scan["is_min"] = self.comm.gather(results["is_min"], root=0)
         self.finalize()
 
-    def finalize(self):
+    def finalize(self, lbda=0.2):
         if self.rank == 0:
             for key in self.scan.keys():
                 self.scan[key] = np.array([item for item in self.scan[key]])
-            non_zeros = np.where(self.scan["score"] > 0)[0]
-            thrsh = np.percentile(self.scan["score"][non_zeros], 10)
-            self.thrsh = thrsh
-            score_indices = np.where(self.scan["score"] > thrsh)[0]
-            shift_index = np.argmin(self.scan["residual"][score_indices])
-            index = score_indices[shift_index]
-            self.index = index
-            self.bo_history = self.scan["bo_history"][index]
-            self.params = self.scan["params"][index]
-            self.residual = self.scan["residual"][index]
-            self.best_score = self.scan["score"][index]
-            self.best_idx = self.scan["best_idx"][index]
+            self.valid = self.scan["is_min"]
+            self.invalid = np.where(~self.valid)[0]
+            self.final_score = self.scan["score"] + lbda * self.scan["penalty"]
+            self.index = np.argmax(self.final_score)
+            self.bo_history = self.scan["bo_history"][self.index]
+            self.params = self.scan["params"][self.index]
+            self.neglog_score = self.scan["score"][self.index]
+            self.size = self.scan["size"][self.index]
+            self.sigma = self.scan["sigma"][self.index]
+            self.penalty = self.scan["penalty"][self.index]
+            self.best_idx = self.scan["best_idx"][self.index]
             self.gr = GeometryRefinement(
                 calibrant=self.calibrant,
                 dist=self.params[0],
@@ -1005,15 +1182,15 @@ class BayFAIOpt:
             if score == "bragg":
                 y[i] = self.number_bragg_peaks(X[i], Imin, max_rings)
             elif score == "residual":
-                y[i] = -self.q_residual(X[i], Imin, max_rings)
+                y[i] = self.q_residual(X[i], Imin, max_rings)
             elif score == "residual_v2":
-                y[i] = -self.q_residual_v2(X[i], Imin, max_rings)
+                y[i] = self.q_residual_v2(X[i], Imin, max_rings)
             elif score == "theta_residual":
-                y[i] = -self.theta_residual(X[i], Imin, max_rings)
+                y[i] = self.theta_residual(X[i], Imin, max_rings)
             elif score == "intensity":
                 y[i] = self.ring_intensity(X[i], Imin, max_rings)
             elif score == "powder_residual":
-                y[i] = -self.powder_residual(X[i])
+                y[i] = self.powder_residual(X[i])
             history["params"].append(X[i])
             history["scores"].append(y[i])
         

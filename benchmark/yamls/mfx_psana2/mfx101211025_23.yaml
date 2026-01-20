@@ -1,0 +1,113 @@
+date: 2023/10/25
+experiment: mfx101211025
+lute_version: 0.1
+run: 23
+task_timeout: 6000
+title: LUTE Task Configuration
+work_dir: ../tests/v2/test_mfx_psana2_24
+---
+AnalyzeSmallDataXAS:
+  ccm: epics/ccm_E
+  ccm_set: epicsUser/ccm_E_setpoint
+  ipm_var: ipm_dg2/sum
+  scan_var:
+  - lxt
+  - lxe_opa
+  - lxt_fast
+  thresholds:
+    min_Iscat: 10
+    min_ipm: 500
+  xas_detname: epix_1
+  xss_detname: epix10k2M
+AnalyzeSmallDataXES:
+  ipm_var: ipm_dg2/sum
+  scan_var:
+  - lxt
+  - lxt_fast
+  thresholds:
+    min_Iscat: 10
+    min_ipm: 1000
+  xes_detname: epix_1
+  xss_detname: epix10k2M
+AnalyzeSmallDataXSS:
+  ipm_var: ipm_dg2/sum
+  scan_var:
+  - lxt
+  - lens_v
+  - lens_h
+  thresholds:
+    min_Iscat: 10
+    min_ipm: 500
+  xss_detname: epix10k2M
+BayFAI:
+  bo_params:
+    max_rings: 8
+    n_iterations: 80
+    n_samples: 20
+    seed: null
+  calibrant: LaB6
+  center:
+    dist: 0.1
+    poni1: 0.0
+    poni2: 0.0
+    rot1: 0.0
+    rot2: 0.0
+    rot3: 0.0
+  detname: jungfrau
+  fixed:
+  - rot1
+  - rot2
+  - rot3
+  out_file: ../tests/v2/test_mfx_psana2_24/geom/mfx101211025/23-end.data
+  powder: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/powder/mfx101211025_Run0023.h5
+  preprocess: false
+CompareHKL:
+  symmetry: 4/mmm_uac
+ConvertSMDToNexus:
+  convertor_script: LUTE_LOCATION/third_party_scripts/smd2nx.py
+  geom: /path/to/geom.expt
+DimpleSolve:
+  pdb: /path/to/pdb/XYZ.pdb
+FindPeaksPyAlgos:
+  amax_thr: 40
+  atot_thr: 180
+  det_name: epix10k2M
+  dr: 2.0
+  event_logic: false
+  event_receiver: evr0
+  mask_file: null
+  max_peaks: 2048
+  min_peaks: 10
+  npix_max: 30
+  npix_min: 2
+  nsigm: 10.0
+  outdir: /path/to/cxi_out
+  peak_rank: 3
+  psana_mask: false
+  pv_camera_length: MFX:ROB:CONT:POS:Z
+  r0: 3.0
+  son_min: 10.0
+  tag: lyso
+IndexCrystFEL:
+  cell_file: /path/to/cell.cell
+  geometry: /geom.geom
+  indexing: mosflm
+  int_radius: 3,4,5
+  multi: true
+  no_revalidate: true
+  peaks: cxi
+  profile: true
+  tolerance: 5,5,5,1.5
+MergePartialator:
+  symmetry: 4/mmm_uac
+SubmitSMD:
+  detSumAlgos:
+    all:
+    - calib
+    - calib_dropped
+    - calib_dropped_square
+    - calib_thresADU1
+    - calib_max
+  detnames:
+  - jungfrau
+  directory: /sdf/data/lcls/ds/mfx/mfx101211025/results/bayfai

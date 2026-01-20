@@ -1,0 +1,28 @@
+
+# COMMENT:00 detector:Epix10ka2M experiment:abcd01234
+# COMMENT:01 constants generated from optical metrology
+# COMMENT:02 processor version 1 - panels only, no quads
+# DATE_TIME 2021-01-27 15:00:18 PST
+# USER dubrovin
+# CALIB_TYPE geometry
+# PARAM:01 PARENT     - name and version of the parent object
+# PARAM:02 PARENT_IND - index of the parent object
+# PARAM:03 OBJECT     - name and version of the object
+# PARAM:04 OBJECT_IND - index of the new object
+# PARAM:05 X0         - x-coordinate [um] of the object origin in the parent frame
+# PARAM:06 Y0         - y-coordinate [um] of the object origin in the parent frame
+# PARAM:07 Z0         - z-coordinate [um] of the object origin in the parent frame
+# PARAM:08 ROT_Z      - object design rotation angle [deg] around Z axis of the parent frame
+# PARAM:09 ROT_Y      - object design rotation angle [deg] around Y axis of the parent frame
+# PARAM:10 ROT_X      - object design rotation angle [deg] around X axis of the parent frame
+# PARAM:11 TILT_Z     - object tilt angle [deg] around Z axis of the parent frame
+# PARAM:12 TILT_Y     - object tilt angle [deg] around Y axis of the parent frame
+# PARAM:13 TILT_X     - object tilt angle [deg] around X axis of the parent frame
+
+# HDR PARENT IND     OBJECT IND    X0[um]   Y0[um]   Z0[um]   ROT-Z  ROT-Y  ROT-X     TILT-Z    TILT-Y    TILT-X
+
+      CAMERA  0  EPIX10KA:V2  0     20791   -20806        3       0      0      0    0.23214   0.25731   0.20971
+      CAMERA  0  EPIX10KA:V2  1    -20692   -20880       -3       0      0      0    0.04054  -0.13699  -0.00753
+      CAMERA  0  EPIX10KA:V2  2     20697    20601       -3       0      0      0    0.25870   0.04055   0.01810
+      CAMERA  0  EPIX10KA:V2  3    -20796    21086        2       0      0      0    0.14601  -0.35560   0.02638
+          IP  0       CAMERA  0         0        0  -100000      90      0      0    0.00000   0.00000   0.00000

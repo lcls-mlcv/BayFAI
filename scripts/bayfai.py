@@ -20,6 +20,7 @@ def main(args):
         wavelength=args.wavelength,
         fixed=args.fixed,
         in_file=args.in_file,
+        is_psana2=args.psana2,
     )
 
     # Run Bayesian Optimization
@@ -48,7 +49,7 @@ def main(args):
         print(f"Best tilt-y: {optimizer.params[4]}")
         print(f"Best tilt-z: {optimizer.params[5]}")
         print(f"Best score: {optimizer.best_score}")
-        print(f"Residual: {optimizer.residual}")
+        print(f"Score: {optimizer.neglog_score}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="BayFAI Geometry Optimization")
@@ -57,6 +58,7 @@ if __name__ == "__main__":
     parser.add_argument("--exp", type=str, required=True, help="Experiment name")
     parser.add_argument("--run", type=int, required=True, help="Run number")
     parser.add_argument("--detname", type=str, required=True, help="Detector name")
+    parser.add_argument("--psana2", action="store_true", help="Use psana2 geometry conversion")
 
     # --- I/O Arguments ---
     parser.add_argument("--in_file", type=str, required=True, help="Path to the input metrology file")

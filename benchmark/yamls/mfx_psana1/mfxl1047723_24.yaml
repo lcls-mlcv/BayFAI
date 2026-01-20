@@ -1,0 +1,31 @@
+date: 2023/10/25
+experiment: mfxl1047723
+lute_version: 0.1
+run: 24
+task_timeout: 1200
+title: LUTE Task Configuration
+work_dir: ../tests/v2/test_mfx_psana1_24
+---
+BayFAI:
+  bo_params:
+    max_rings: 8
+    n_iterations: 80
+    n_samples: 20
+    seed: null
+  calibrant: AgBh
+  center:
+    dist: 0.1
+    poni1: 0.0
+    poni2: 0.0
+    rot1: 0.0
+    rot2: 0.0
+    rot3: 0.0
+  detname: epix10k2M
+  fixed:
+  - rot1
+  - rot2
+  - rot3
+  in_file: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/geom/mfxl1047723/0-end.data
+  out_file: ../tests/v2/test_mfx_psana1_24/geom/mfxl1047723/24-end.data
+  powder: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/powder/mfxl1047723_Run0024.h5
+  preprocess: false
