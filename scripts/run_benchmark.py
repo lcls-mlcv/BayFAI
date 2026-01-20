@@ -1,6 +1,7 @@
 import os
 import subprocess
 from pathlib import Path
+from datetime import datetime
 import yaml
 import argparse
 
@@ -23,18 +24,29 @@ def submit_task(executable, yaml_file, task, ncores, partition, account, exp=Non
     return command
 
 def main(args):
+    
+    # Parse arguments
     hutch = args.hutch
-    seed = args.seed
+    n_samples = args.n_samples
+    n_iterations = args.n_iterations
     max_rings = args.max_rings
+    prior = args.prior
+    beta = args.beta
+    step = args.step
+    seed = args.seed
     smooth = args.smooth
+
+    # Set up directories
     work_dir = Path.cwd()
     yaml_folder = Path(f"../BayFAI/benchmark/yamls/{hutch}")
     powder_folder = Path(f"../BayFAI/benchmark/powder")
     results_folder = work_dir / "results"
-    test_folder_name = f"test_{hutch}_{seed}"
+    datetime_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    test_folder_name = f"test_{hutch}_{datetime_str}"
     test_folder = results_folder / test_folder_name
     test_folder.mkdir(parents=True, exist_ok=True)
 
+    # Modify YAML files
     yamls = yaml_folder.glob("*.yaml")
     for config_path in yamls:
         with open(config_path, "r") as f:
@@ -62,14 +74,21 @@ def main(args):
                     doc['BayFAI']['out_file'] = f"{geom_folder}/{run}-end.data"
                 doc['BayFAI']['powder'] = f"{powder_folder}/{exp}_Run{run:0>4}.npy"
                 doc['BayFAI']['preprocess'] = smooth
-                doc['BayFAI']['bo_params']['n_samples'] = 20
-                doc['BayFAI']['bo_params']['n_iterations'] = 80
+                doc['BayFAI']['bo_params']['n_samples'] = n_samples
+                doc['BayFAI']['bo_params']['n_iterations'] = n_iterations
                 doc['BayFAI']['bo_params']['max_rings'] = max_rings
-                doc['BayFAI']['bo_params']['seed'] = None
+                doc['BayFAI']['bo_params']['prior'] = prior
+                doc['BayFAI']['bo_params']['beta'] = beta
+                doc['BayFAI']['bo_params']['step'] = step
+                if seed==0:
+                    doc['BayFAI']['bo_params']['seed'] = None
+                else:
+                    doc['BayFAI']['bo_params']['seed'] = seed
 
         with open(config_path, "w") as f:
             yaml.safe_dump_all(config, f)
 
+        # Submit SLURM jobs
         executable = "/sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/lute/launch_scripts/submit_slurm.sh"
         if hutch=='mfx_psana2':
             task = "BayFAIOptimizer2"
@@ -108,11 +127,18 @@ if __name__ == "__main__":
 
     # Required arguments
     parser.add_argument("--hutch", type=str, help="Hutch to run benchmarks")
-    parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility")
 
     # Hyperparameters for BayFAI
+    parser.add_argument("--n_samples", type=int, default=20, help="Number of initial samples to draw")
+    parser.add_argument("--n_iterations", type=int, default=80, help="Number of Bayesian optimization iterations")
     parser.add_argument("--max_rings", type=int, default=8, help="Max number of rings to consider")
+    parser.add_argument("--prior", action="store_false", help="Flag to draw initial samples at random or from a gaussian prior defined by the center parameter")
+    parser.add_argument("--beta", type=float, default=1.96, help="Exploration-exploitation trade-off parameter for UCB acquisition function")
+    parser.add_argument("--step", type=int, default=5, help="Number of grid steps to refine around the BO best parameter for the gradient descent search")
     parser.add_argument("--smooth", action="store_true", help="Flag to smooth powder image or not")
+
+    # Reproducibility
+    parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility")
     
     args = parser.parse_args()
     main(args)
