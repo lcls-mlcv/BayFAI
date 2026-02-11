@@ -1,13 +1,39 @@
 # BayFAI User Documentation
 
 <a name="toc"></a> **Jump to:**
+- [`Running BayFAI Benchmark`](#running-bayfai-benchmark)
+- [`Setting up BayFAI Manual Calibration notebook`](#setting-up-bayfai-notebook)
 - [`BayFAI Experiment Configuration`](#bayfai-configuration)
 - [`Running BayFAI from the Command-Line`](#running-bayfai-from-the-command-line)
 - [`Running BayFAI from the eLog`](#running-bayfai-from-the-elog)
 - [`Running only BayFAI Geometry Calibration`](#running-only-bayfai-geometry-calibration)
-- [`Running BayFAI test version`](#running-bayfai-test-version)
 
 ---
+## Running BayFAI Benchmark 
+
+## Setting up BayFAI Notebook
+
+If BayFAI failed to produce a clean geometry, this repository provides a notebook in `notebooks/manual_calibration.ipynb` for refinement.
+To set it up, follow these steps:
+
+1. Clone this repository in the experiment results folder:
+    ```bash
+    (base) [lconreux@sdfiana002 ~] cd /sdf/data/lcls/ds/<hutch>/<experiment>/results/
+    (base) [lconreux@sdfiana002 results] git clone https://github.com/lcls-mlcv/BayFAI.git
+    ```
+
+2. Build the package: 
+    ```bash
+    (base) [lconreux@sdfiana002 results] cd BayFAI
+    (base) [lconreux@sdfiana002 BayFAI] pip install -e .
+    ```
+
+3. Verify installation:
+    ```bash
+    (bayfai) [lconreux@sdfiana002 BayFAI] python -c "import bayfai; print('BayFAI imported successfully')"
+    (bayfai) [lconreux@sdfiana002 BayFAI]
+    ```
+
 ## BayFAI Configuration
 
 ### Preliminaries `lute`
@@ -34,7 +60,7 @@ Once the experiment is ready to collect a geometry calibration run, and the user
     TW: this script requires the user to have an active kerberos authentification ticket to be able to populate the eLog. You can check if you have an active ticket by running `klist` in your terminal.
     If you don't have one, before running `setup_lute`, run `kinit` in your terminal and give your unix password.
     ```bash
-    (base) [lconreux@sdfiana002 ~] /sdf/group/lcls/ds/tools/lute/dev/lute/utilities/setup_lute -e <experiment> -f --directory=bayfai -w bayfai --test --nodes=1
+    (base) [lconreux@sdfiana002 ~] /sdf/group/lcls/ds/tools/lute/dev/lute/utilities/setup_lute -e <experiment> -f --directory=bayfai -W bayfai --test --nodes=1
     ```
     ___Nota Bene___: The script will prompt you three times (for partition, account, and number of tasks). Simply press Enter each time to accept the default settings.
 
