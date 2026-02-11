@@ -23,17 +23,41 @@ To set it up, follow these steps:
     (base) [lconreux@sdfiana002 results] git clone https://github.com/lcls-mlcv/BayFAI.git
     ```
 
-2. Build the package: 
+2. Build the package:
     ```bash
     (base) [lconreux@sdfiana002 results] cd BayFAI
     (base) [lconreux@sdfiana002 BayFAI] pip install -e .
     ```
 
-3. Verify installation:
-    ```bash
-    (bayfai) [lconreux@sdfiana002 BayFAI] python -c "import bayfai; print('BayFAI imported successfully')"
-    (bayfai) [lconreux@sdfiana002 BayFAI]
-    ```
+3. Open an Ondemand session to open the jupyter notebook now!
+    
+4. To get started, you need to specify a few things for setting up the calibration:
+    - experiment tag
+    - run number
+    - detector name (jungfrau, epix10k2M...)
+    - calibrant name (AgBh, LaB6, CeO2...)
+    - powder_path (path to the hdf5 produced by `smalldata`)
+
+5. Once the setup cell is run, iterate over changing:
+    - Image settings
+        - vmin
+        - vmax
+        - 1st ring to be plotted
+        - last ring to be plotted
+    - Geometric Parameters
+        - detector-sample distance dist
+        - shift in y-axis poni1
+        - shift in x-axis poni2
+        - rotation around y-axis rot1
+        - rotation around x-axis rot2
+        - rotation around z-axis rot3
+
+6. Once you are happy with the base geometry, you can:
+    - Azimuthally integrate the detector to check for alignment by calling `fitter.integrate_detector()`
+    - Further refine the geometry using PyFAI gradient descent by calling `fitter.refine_geometry()`
+    - Iterate again if needed.
+
+7. Once everything is perfect, output the corrected geometry files by running the last cell
 
 ## BayFAI Configuration
 
