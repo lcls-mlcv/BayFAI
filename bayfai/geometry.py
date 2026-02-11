@@ -2,7 +2,7 @@ import numpy as np
 import numpy.typing as npt
 from typing import Optional
 import pyFAI
-from scipy.ndimage import gaussian_filter1d
+from pyFAI.azimuthalIntegrator import AzimuthalIntegrator
 
 def rotation_matrix(params: list) -> np.ndarray:
     """
@@ -127,38 +127,6 @@ def calculate_q(
     wavelength = detector.wavelength
     q = 4.0 * np.pi * np.sin(tth / 2.0) / (wavelength * 1e10)
     return q
-
-
-def azimuthal_integration(
-    powder: npt.NDArray[np.float64],
-    detector: pyFAI.detectors.Detector,
-    params: Optional[list] = None,
-) -> tuple:
-    """
-    Compute the radial intensity profile of an image.
-
-    Parameters
-    ----------
-    powder : numpy.ndarray, shape (n,m)
-        detector image
-    detector : pyFAI.Detector
-        PyFAI detector object
-    params : list, optional
-        6 Geometry parameters: distance, x-shift, y-shift, Rx, Ry, Rz
-    """
-    tth = calculate_2theta(detector, params)
-    n_bins = round(len(tth.ravel()) / 4000) # aim for ~4000 pixels per bin
-    intensity, bin_edges = np.histogram(
-        tth.ravel(), bins=n_bins, range=(tth.min(), tth.max()), weights=powder.ravel()
-    )
-    count, _ = np.histogram(tth.ravel(), bins=bin_edges)
-    radialprofile = np.divide(
-        intensity, count, out=np.zeros_like(intensity), where=count != 0
-    )
-    radialprofile = gaussian_filter1d(radialprofile, sigma=2)
-    tth_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
-    return radialprofile, tth_centers
-
 
 def theta2q(theta: np.ndarray, wavelength: float) -> np.ndarray:
     """
