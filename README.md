@@ -4,6 +4,7 @@
 - [`Running BayFAI Benchmark`](#running-bayfai-benchmark)
 - [`Setting up BayFAI Manual Calibration notebook`](#setting-up-bayfai-notebook)
 - [`BayFAI Experiment Configuration`](#bayfai-configuration)
+- [`Running BayFAI Benchmark`](#running-bayfai-benchmark)
 - [`Running BayFAI from the Command-Line`](#running-bayfai-from-the-command-line)
 - [`Running BayFAI from the eLog`](#running-bayfai-from-the-elog)
 - [`Running only BayFAI Geometry Calibration`](#running-only-bayfai-geometry-calibration)
@@ -100,15 +101,43 @@ Once the experiment is ready to collect a geometry calibration run, and the user
                 - "rot2"
                 - "rot3"
                 center:
-                dist: 0.1                   # Fill this section with rough estimates
-                poni1: 0.0
-                poni2: 0.0
-                rot1: 0.0
-                rot2: 0.0
-                rot3: 0.0
+                  dist: 0.1                 # Fill this section with rough estimates
+                  poni1: 0.0
+                  poni2: 0.0
+                  rot1: 0.0
+                  rot2: 0.0
+                  rot3: 0.0
                 calibrant: "AgBh"           # Fill this line with calibrant name (AgBh, LaB6...)
                 detname: "jungfrau"         # Fill this line with detector name (epix10k2M, jungfrau...)
             ```
+
+## Running BayFAI benchmark
+
+Calibration runs were collected to constitute a benchmark to test different versions of BayFAI. Those calibration powder images can be found under the `benchmark` folder in this repository.
+
+If you would like to run the whole benchmark test, follow these steps:
+
+1. Clone the BayFAI repository
+    ```bash
+    (base) [lconreux@sdfiana002 ~] git clone https://github.com/lcls-mlcv/BayFAI.git
+    ```
+
+2. Navigate to the launchpad folder:
+    ```bash
+    (base) [lconreux@sdfiana002 ~] mkdir launchpad 
+    (base) [lconreux@sdfiana002 launchpad] cd launchpad 
+    ```
+
+3. Run the hutch benchmark of your choice:
+    ```bash
+    (base) [lconreux@sdfiana002 launchpad] python ../BayFAI/scripts/run_benchmark.py --hutch=<hutch> (cxi, mec, mfx_psana1, mfx_psana2)
+    ```
+
+__Nota Bene__
+- This will create a `results` folder in your working directory with inside the final optimization plots under `figs` as well as the geometry found in `geom`.
+- The `lute` logs can be found in your `launchpad` folder. Here, the default BayFAI development `lute` is used to run the benchmark. This `lute` clone can be found at `/sdf/data/lcls/ds/prj/prjlute22/results/geom_opt/lute`.
+- You are welcome to try different set of hyperparameters by adding extra keys to the command (`--n_samples`, `--n_iterations`, `--max_rings`...)
+
 
 ## Running BayFAI from the Command-Line
 
