@@ -12,6 +12,8 @@
 ---
 ## Running BayFAI Benchmark 
 
+WORK IN PROGRESS
+
 ## Setting up BayFAI Notebook
 
 If BayFAI failed to produce a clean geometry, this repository provides a notebook in `notebooks/manual_calibration.ipynb` for refinement.
