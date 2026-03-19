@@ -165,7 +165,7 @@ class FakeDetector:
         img = ax.imshow(self._cached_powder, vmin=self.vmin, vmax=self.vmax, origin="lower")
         ttha = calculate_2theta(self.detector, self.params)
         contours = []
-        for p in range(self.detector.raw_shape[0]):
+        for p in range(self.detector.calib_shape[0]):
             i = self.detector.pixel_index_map[p, ..., 0]
             j = self.detector.pixel_index_map[p, ..., 1]
             cs = ax.contour(j, i, ttha[p], levels=self.tth[:self.max_rings], cmap="autumn",
@@ -219,7 +219,7 @@ class FakeDetector:
             self.params = [w.value for w in geom_inputs]
             ttha = calculate_2theta(self.detector, self.params)
             contours = []
-            for p in range(self.detector.raw_shape[0]):
+            for p in range(self.detector.calib_shape[0]):
                 i = self.detector.pixel_index_map[p, ..., 0]
                 j = self.detector.pixel_index_map[p, ..., 1]
                 cs = ax.contour(j, i, ttha[p], levels=self.tth[self.min_rings-1:self.max_rings], cmap="autumn",
@@ -251,6 +251,7 @@ class FakeDetector:
         """
         in_file = get_geometry(detname)
         detector = PsanaToPyFAI.convert(in_file, detname)
+        self.mask = detector.geo.get_pixel_mask(mbits=3)
         return detector
 
     def define_calibrant(self, calibrant_name: str) -> pyFAI.calibrant.Calibrant:

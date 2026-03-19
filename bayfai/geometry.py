@@ -1,8 +1,6 @@
 import numpy as np
-import numpy.typing as npt
 from typing import Optional
 import pyFAI
-from pyFAI.azimuthalIntegrator import AzimuthalIntegrator
 
 def rotation_matrix(params: list) -> np.ndarray:
     """
@@ -59,9 +57,9 @@ def correct_geom(detector: pyFAI.detectors.Detector, params: Optional[list] = No
             z = (z + dist).ravel()
         coord_det = np.vstack((x, y, z))
         x, y, z = np.dot(rotation_matrix(params), coord_det)
-    x = np.reshape(x, detector.raw_shape)
-    y = np.reshape(y, detector.raw_shape)
-    z = np.reshape(z, detector.raw_shape)
+    x = np.reshape(x, detector.calib_shape)
+    y = np.reshape(y, detector.calib_shape)
+    z = np.reshape(z, detector.calib_shape)
     return x, y, z
 
 
@@ -84,7 +82,7 @@ def calculate_radius(
         map of pixels' radii
     """
     x, y, _ = correct_geom(detector, params)
-    r = np.zeros(detector.raw_shape)
+    r = np.zeros(detector.calib_shape)
     for p in range(detector.n_modules):
         r[p] = np.sqrt(x[p] ** 2 + y[p] ** 2)
     return r
@@ -104,7 +102,7 @@ def calculate_2theta(
         6 Geometry parameters: distance, x-shift, y-shift, Rx, Ry, Rz
     """
     x, y, z = correct_geom(detector, params)
-    tth = np.zeros(detector.raw_shape)
+    tth = np.zeros(detector.calib_shape)
     for p in range(detector.n_modules):
         tth[p] = np.arctan2(np.sqrt(x[p] * x[p] + y[p] * y[p]), z[p])
     return tth
