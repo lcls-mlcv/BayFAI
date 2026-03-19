@@ -1,6 +1,6 @@
 import os
 import sys
-sys.path.append("/sdf/home/l/lconreux/LCLSGeom")
+sys.path.append("/sdf/group/lcls/ds/LCLSGeom")
 
 import psana
 
