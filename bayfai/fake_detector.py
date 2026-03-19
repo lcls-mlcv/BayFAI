@@ -1,19 +1,20 @@
 import os
 import sys
-sys.path.append("/sdf/group/lcls/ds/LCLSGeom")
+sys.path.append("/sdf/home/l/lconreux/LCLSGeom")
 
 import psana
 
 if hasattr(psana, "xtc_version"):
     from psana import DataSource
-    from LCLSGeom.psana2.converter import PsanaToPyFAI, PyFAIToPsana, PyFAIToCrystFEL
 
     IS_PSANA2 = True
 else:
     from psana import DataSource, Detector
-    from LCLSGeom.psana.converter import PsanaToPyFAI, PyFAIToPsana, PyFAIToCrystFEL
 
     IS_PSANA2 = False
+
+from LCLSGeom.manager import get_geometry, push_to_database
+from LCLSGeom.converter import PyFAIToPsana, PyFAIToCrystFEL, PsanaToPyFAI
 
 import numpy as np
 import h5py
@@ -48,10 +49,8 @@ class FakeDetector:
         Calibrant name (AgBh, LaB6, CeO2)
     powder_path : str
         Path to the h5 file containing the powder data.
-    in_file : Optional[str]
-        Path to the .data file containing the detector information.
     """
-    def __init__(self, exp, run, detname, calibrant, powder_path, in_file=None):
+    def __init__(self, exp, run, detname, calibrant, powder_path):
         self.exp = exp
         self.run = run
         self.detname = detname
@@ -67,14 +66,13 @@ class FakeDetector:
             self.ds = DataSource(f"exp={exp}:run={run}:idx")
             self.runs = next(self.ds.runs())
             self.evt = self.runs.event(self.runs.times()[0])
-        self.setup(detname, powder_path, calibrant, in_file)
+        self.setup(detname, powder_path, calibrant)
 
     def setup(
         self,
         detname: str,
         powder_path: str,
         calibrant: str,
-        in_file: Optional[str] = None,
     ):
         """
         Setup the BayFAI optimization.
@@ -90,7 +88,7 @@ class FakeDetector:
         in_file : str
             Path to the input geometry file
         """
-        self.detector = self.build_detector(detname, in_file)
+        self.detector = self.build_detector(detname)
         self.calibrant = self.define_calibrant(calibrant)
         self.powder = self.generate_powder(powder_path, detname)
 
@@ -237,36 +235,22 @@ class FakeDetector:
         ui = widgets.HBox([fig.canvas, controls])
         display(ui)
 
-    def build_detector(self, detname: str, in_file: Optional[str] = None) -> pyFAI.detectors.Detector:
+    def build_detector(self, detname: str) -> pyFAI.detectors.Detector:
         """
-        Build a PyFAI detector from a .data file
+        Build a PyFAI detector using default metrology data.
 
         Parameters
         ----------
         detname : str
             Name of the detector
-        in_file : str
-            Path to the .data file containing the detector information.
         
         Returns
         -------
         detector : pyFAI.detectors.Detector
             The built PyFAI detector.
         """
-        if IS_PSANA2:
-            det = self.runs.Detector(detname)
-            psana_to_pyfai = PsanaToPyFAI(
-                input=det,
-            )
-            detector = psana_to_pyfai.detector
-            self.mask = detector.geo.get_pixel_mask(mbits=3)
-        else:
-            psana_to_pyfai = PsanaToPyFAI(
-                in_file=in_file,
-            )
-            detector = psana_to_pyfai.detector
-            mask = detector.geo.get_pixel_mask(mbits=3)
-            self.mask = np.squeeze(mask, axis=0)
+        in_file = get_geometry(detname)
+        detector = PsanaToPyFAI.convert(in_file, detname)
         return detector
 
     def define_calibrant(self, calibrant_name: str) -> pyFAI.calibrant.Calibrant:
@@ -434,19 +418,30 @@ class FakeDetector:
             os.makedirs(path, exist_ok=True)
         poni_file = os.path.join(path, f"r{self.run:0>4}.poni")
         self.gr.save(poni_file)
-        PyFAIToPsana(
+        PyFAIToPsana.convert(
             in_file=poni_file,
             detector=self.detector,
             out_file=out_file,
         )
         geom_file = os.path.join(path, f"r{self.run:0>4}.geom")
-        PyFAIToCrystFEL(
+        PyFAIToCrystFEL.convert(
             in_file=poni_file,
             detector=self.detector,
             out_file=geom_file,
         )
-        psana_to_pyfai = PsanaToPyFAI(
-            out_file,
-        )
-        detector = psana_to_pyfai.detector
+        detector = PsanaToPyFAI.convert(out_file, self.detname)
         return detector
+
+    def push_to_db(self, out_file: str) -> None:
+        """
+        Push the refined geometry to the database.
+
+        Parameters
+        ----------
+        out_file : str
+            Path to the output geometry file to push to the database.
+        """
+        if IS_PSANA2:
+            push_to_database(self.exp, self.run, self.detname, out_file)
+        else:
+            raise NotImplementedError("No Database for LCLS1 detectors.")
