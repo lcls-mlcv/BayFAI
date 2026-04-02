@@ -1,7 +1,4 @@
 import os
-import sys
-sys.path.append("/sdf/home/l/lconreux/LCLSGeom")
-
 import psana
 
 if hasattr(psana, "xtc_version"):
@@ -23,7 +20,6 @@ from matplotlib import lines
 import ipywidgets as widgets
 from IPython.display import display
 import numpy.typing as npt
-from typing import Optional
 import pyFAI
 from pyFAI.calibrant import CALIBRANT_FACTORY
 from pyFAI.goniometer import SingleGeometry

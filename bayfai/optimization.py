@@ -1,4 +1,3 @@
-import sys
 import os
 import numpy as np
 import numpy.typing as npt
@@ -6,6 +5,7 @@ import h5py
 import pyFAI
 from pyFAI.geometry import Geometry
 from pyFAI.goniometer import SingleGeometry
+from pyFAI.azimuthalIntegrator import AzimuthalIntegrator
 from pyFAI.geometryRefinement import GeometryRefinement
 from pyFAI.calibrant import CALIBRANT_FACTORY
 from sklearn.gaussian_process import GaussianProcessRegressor
@@ -13,12 +13,12 @@ from sklearn.gaussian_process.kernels import RBF, ConstantKernel, WhiteKernel
 from sklearn.utils._testing import ignore_warnings
 from sklearn.exceptions import ConvergenceWarning
 from scipy.signal import find_peaks
-from scipy.ndimage import gaussian_filter
 from mpi4py import MPI
 
-sys.path.append("/sdf/home/l/lconreux/LCLSGeom")
+from LCLSGeom.manager import get_geometry, push_to_database
+from LCLSGeom.converter import PyFAIToPsana, PyFAIToCrystFEL, PsanaToPyFAI
 
-from bayfai.geometry import azimuthal_integration, calculate_2theta
+from bayfai.geometry import calculate_2theta
 
 pyFAI.use_opencl = False
 
@@ -71,7 +71,6 @@ class BayFAIOpt:
         calibrant: str,
         wavelength: float,
         fixed: list,
-        in_file: str,
         is_psana2: bool = False,
     ):
         """
@@ -101,7 +100,7 @@ class BayFAIOpt:
         Imin : float
             Minimum intensity value for identifying Bragg peaks
         """
-        self.detector = self.build_detector(in_file, is_psana2)
+        self.detector = self.build_detector(detname)
         self.powder = self.generate_powder(powder, detname, smooth, is_psana2)
         self.stacked_powder = np.reshape(self.powder, self.detector.shape)
         pos_pix = self.powder[self.powder > 0]
@@ -211,84 +210,52 @@ class BayFAIOpt:
         self.assembled_powder = self.assemble_image(powder)
         return powder
 
-    def build_detector(self, in_file: str, is_psana2: bool) -> pyFAI.detectors.Detector:
+    def build_detector(self, detname: str) -> pyFAI.detectors.Detector:
         """
         Read the metrology data and build a pyFAI detector object.
 
         Parameters
         ----------
-        in_file : str
-            Path to the Geometry .data file
-        is_psana2 : bool
-            If True, use psana2 geometry conversion
+        detname : str
+            Name of the detector
 
         Returns
         -------
         pyFAI.Detector
             Configured pyFAI detector object
         """
-        if is_psana2:
-            from LCLSGeom.psana2.converter import PsanaToPyFAI
-            psana_to_pyfai = PsanaToPyFAI(
-                input=in_file,
-            )
-        else:
-            from LCLSGeom.psana.converter import PsanaToPyFAI
-            psana_to_pyfai = PsanaToPyFAI(
-                in_file=in_file,
-            )
-        detector = psana_to_pyfai.detector
+        in_file = get_geometry(detname)
+        detector = PsanaToPyFAI.convert(in_file, detname)
         return detector
 
-    def update_geometry(self, out_file: str, is_psana2: bool) -> pyFAI.detectors.Detector:
+    def update_geometry(self, detname: str, out_file: str) -> pyFAI.detectors.Detector:
         """
         Update the geometry and write a new .poni, .geom and .data file
 
         Parameters
         ----------
+        detname : str
+            Name of the detector
         out_file : str
             Path to the output file
-        is_psana2 : bool
-            If True, use psana2 geometry conversion
         """
         path = os.path.dirname(out_file)
+        if not os.path.exists(path):
+            os.makedirs(path, exist_ok=True)
         poni_file = os.path.join(path, f"r{self.run:0>4}.poni")
         self.gr.save(poni_file)
-        if is_psana2:
-            from LCLSGeom.psana2.converter import PyFAIToPsana, PyFAIToCrystFEL, PsanaToPyFAI
-            PyFAIToPsana(
-                in_file=poni_file,
-                detector=self.detector,
-                out_file=out_file,
-            )
-            geom_file = os.path.join(path, f"r{self.run:0>4}.geom")
-            PyFAIToCrystFEL(
-                in_file=poni_file,
-                detector=self.detector,
-                out_file=geom_file,
-            )
-            psana_to_pyfai = PsanaToPyFAI(
-                input=out_file,
-                rotate=False,
-            )
-        else:
-            from LCLSGeom.psana.converter import PyFAIToPsana, PyFAIToCrystFEL, PsanaToPyFAI
-            PyFAIToPsana(
-                in_file=poni_file,
-                detector=self.detector,
-                out_file=out_file,
-            )
-            geom_file = os.path.join(path, f"r{self.run:0>4}.geom")
-            PyFAIToCrystFEL(
-                in_file=poni_file,
-                detector=self.detector,
-                out_file=geom_file,
-            )
-            psana_to_pyfai = PsanaToPyFAI(
-                in_file=out_file,
-                rotate=False,
-            )
-        detector = psana_to_pyfai.detector
+        PyFAIToPsana.convert(
+            in_file=poni_file,
+            detector=self.detector,
+            out_file=out_file,
+        )
+        geom_file = os.path.join(path, f"r{self.run:0>4}.geom")
+        PyFAIToCrystFEL.convert(
+            in_file=poni_file,
+            detector=self.detector,
+            out_file=geom_file,
+        )
+        detector = PsanaToPyFAI.convert(out_file, detname)
         return detector
 
     def define_calibrant(self, calibrant_name: str, wavelength: float) -> pyFAI.calibrant.Calibrant:
@@ -306,6 +273,42 @@ class BayFAIOpt:
         calibrant = CALIBRANT_FACTORY(calibrant_name)
         calibrant.wavelength = wavelength
         return calibrant
+    
+    def azimuthal_integration(self) -> tuple:
+        """
+        Compute the radial intensity profile of an image.
+
+        Parameters
+        ----------
+        powder : numpy.ndarray, shape (n,m)
+            detector image
+        detector : pyFAI.Detector, shape (n,m)
+            PyFAI detector object
+        params : list, optional
+            6 Geometry parameters: distance, x-shift, y-shift, Rx, Ry, Rz
+        """
+        if self.params is not None:
+            ai = AzimuthalIntegrator(
+                detector=self.detector,
+                dist=self.params[0],
+                poni1=self.params[1],
+                poni2=self.params[2],
+                rot1=self.params[3],
+                rot2=self.params[4],
+                rot3=self.params[5],
+                wavelength=self.calibrant.wavelength,
+            )
+        else:
+            ai = AzimuthalIntegrator(detector=self.detector,
+                dist=0.1,
+                wavelength=self.calibrant.wavelength
+            )
+        q, I = ai.integrate1d(
+            self.stacked_powder,
+            npt=256,
+            unit="q_A^-1",
+            method="cython")
+        return q, I
 
     def set_search_space(self, fixed: list) -> None:
         """
