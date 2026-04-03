@@ -160,7 +160,7 @@ class FakeDetector:
         self.vmax = np.percentile(powder, 95)
         self._cached_powder = powder_ass
         fig, ax = plt.subplots(figsize=(8, 8))
-        img = ax.imshow(self._cached_powder, vmin=self.vmin, vmax=self.vmax, origin="lower")
+        img = ax.imshow(self._cached_powder, vmin=self.vmin, vmax=self.vmax)
         ttha = calculate_2theta(self.detector, self.params)
         contours = []
         for p in range(self.detector.calib_shape[0]):
