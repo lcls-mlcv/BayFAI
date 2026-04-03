@@ -10,6 +10,8 @@ else:
 
     IS_PSANA2 = False
 
+import sys
+sys.path.append("/sdf/home/l/lconreux/LCLSGeom_test/LCLSGeom")
 from LCLSGeom.manager import get_geometry, push_to_database
 from LCLSGeom.converter import PyFAIToPsana, PyFAIToCrystFEL, PsanaToPyFAI
 
