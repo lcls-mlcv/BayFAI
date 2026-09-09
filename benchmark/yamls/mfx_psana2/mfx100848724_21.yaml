@@ -7,7 +7,7 @@ title: LUTE Task Configuration
 work_dir: ../tests/v2/test_mfx_psana2_24
 ---
 BayFAI:
-  bo_params:
+  bayfai_params:
     max_rings: 8
     n_iterations: 80
     n_samples: 20
@@ -25,9 +25,7 @@ BayFAI:
   - rot1
   - rot2
   - rot3
-  out_file: ../tests/v2/test_mfx_psana2_24/geom/mfx100848724/21-end.data
-  powder: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/powder/mfx100848724_Run0021.h5
-  preprocess: false
+  h5: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/powder/mfx100848724_Run0021.h5
 SubmitSMD:
   detSumAlgos:
     all:

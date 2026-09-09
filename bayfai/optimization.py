@@ -1,26 +1,96 @@
+"""
+Classes for geometry optimization tasks.
+
+This module is kept in sync with the production implementation in LUTE
+(``lute/tasks/_bayfai.py``); the only difference is that it uses a plain stdlib
+logger instead of LUTE's ``get_logger`` so it can be imported standalone.
+
+Classes:
+    BayFAIOpt: optimize LCLS detector geometry using PyFAI coupled with Bayesian Optimization.
+
+Functions:
+    - _build_ai: Build a pyFAI AzimuthalIntegrator from a detector, geometry parameters, and wavelength.
+"""
+
+__all__ = [
+    "BayFAIOpt",
+]
+
+__author__ = "Louis Conreux"
+
 import os
 import numpy as np
 import numpy.typing as npt
-import h5py
-import pyFAI
-from pyFAI.geometry import Geometry
-from pyFAI.goniometer import SingleGeometry
-from pyFAI.azimuthalIntegrator import AzimuthalIntegrator
-from pyFAI.geometryRefinement import GeometryRefinement
-from pyFAI.calibrant import CALIBRANT_FACTORY
-from sklearn.gaussian_process import GaussianProcessRegressor
-from sklearn.gaussian_process.kernels import RBF, ConstantKernel, WhiteKernel
-from sklearn.utils._testing import ignore_warnings
-from sklearn.exceptions import ConvergenceWarning
-from scipy.signal import find_peaks
+import logging
+import matplotlib.pyplot as plt  # type: ignore
+import matplotlib.patches as patches  # type: ignore
+from matplotlib import lines  # type: ignore
+from bokeh.plotting import figure  # type: ignore
+from bokeh.models import LinearColorMapper, HoverTool  # type: ignore
+from bokeh.palettes import Viridis256, Category10  # type: ignore
+from bokeh.models.annotations import Label  # type: ignore
+import h5py  # type: ignore
+import pyFAI  # type: ignore
+from pyFAI.geometry import Geometry  # type: ignore
+from pyFAI.goniometer import SingleGeometry  # type: ignore
+from pyFAI.geometryRefinement import GeometryRefinement  # type: ignore
+from pyFAI.calibrant import CALIBRANT_FACTORY  # type: ignore
+from pyFAI.units import RADIAL_UNITS  # type: ignore
+from pyFAI.azimuthalIntegrator import AzimuthalIntegrator  # type: ignore
+from sklearn.gaussian_process import GaussianProcessRegressor  # type: ignore
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel, WhiteKernel  # type: ignore
+from sklearn.utils._testing import ignore_warnings  # type: ignore
+from sklearn.exceptions import ConvergenceWarning  # type: ignore
 from mpi4py import MPI
 
-from LCLSGeom.manager import get_geometry, push_to_database
-from LCLSGeom.converter import PyFAIToPsana, PyFAIToCrystFEL, PsanaToPyFAI
-
-from bayfai.geometry import calculate_2theta
+from LCLSGeom.manager import get_geometry  # type: ignore
+from LCLSGeom.converter import PsanaToPyFAI, PyFAIToPsana, PyFAIToCrystFEL  # type: ignore
 
 pyFAI.use_opencl = False
+
+logger: logging.Logger = logging.getLogger(__name__)
+
+PHOTON_ENERGY_KEYS: tuple = (
+    "ebeamh/ebeamPhotonEnergy",
+    "ebeam/ebeamPhotonEnergy",
+    "ebeam/photon_energy",
+)
+
+
+def _build_ai(
+    detector: pyFAI.detectors.Detector,
+    params: list,
+    wavelength: float,
+) -> AzimuthalIntegrator:
+    """
+    Build a pyFAI AzimuthalIntegrator from a detector, geometry parameters, and wavelength.
+
+    Parameters
+    ----------
+    detector : pyFAI.detectors.Detector
+        PyFAI detector object.
+    params : list
+        6 geometry parameters: [dist, poni1, poni2, rot1, rot2, rot3]
+    wavelength : float
+        X-ray wavelength in meters.
+
+    Returns
+    -------
+    AzimuthalIntegrator
+        Configured pyFAI AzimuthalIntegrator.
+    """
+    dist, poni1, poni2, rot1, rot2, rot3 = params
+    return AzimuthalIntegrator(
+        dist=dist,
+        poni1=poni1,
+        poni2=poni2,
+        rot1=rot1,
+        rot2=rot2,
+        rot3=rot3,
+        detector=detector,
+        wavelength=wavelength,
+    )
+
 
 class BayFAIOpt:
     """
@@ -36,8 +106,8 @@ class BayFAIOpt:
 
     def __init__(
         self,
-        exp,
-        run,
+        exp: str,
+        run: int,
     ):
         self.exp = exp
         self.run = run
@@ -45,7 +115,7 @@ class BayFAIOpt:
         self.rank = self.comm.Get_rank()
         self.size = self.comm.Get_size()
         if self.rank == 0:
-            print(f"Getting {self.size} processes for BayFAIOpt task", flush=True)
+            logger.info(f"Getting {self.size} processes for BayFAIOpt task")
 
     @staticmethod
     def UCB(X, gp_model, visited_idx, beta=1.96):
@@ -66,12 +136,11 @@ class BayFAIOpt:
     def setup(
         self,
         detname: str,
-        powder: str,
-        smooth: bool,
+        h5: str,
+        Imin: float,
         calibrant: str,
-        wavelength: float,
         fixed: list,
-        is_psana2: bool = False,
+        wavelength: float = 1e-10,
     ):
         """
         Setup the BayFAI optimization.
@@ -80,20 +149,17 @@ class BayFAIOpt:
         ----------
         detname : str
             Name of the detector
-        powder : str
-            Path to the powder image to use for calibration
-        smooth : bool
-            If True, apply smoothing to the powder image
+        h5 : str
+            Path to the smalldata h5 file to use for calibration
+        Imin : float
+            Minimum intensity percentile threshold for Bragg peak detection
         calibrant : PyFAI.Calibrant
             PyFAI calibrant object
-        wavelength : float
-            Wavelength of the X-ray source
         fixed : list
             List of parameters to keep fixed during optimization
-        in_file : str
-            Path to the input geometry file
-        is_psana2 : bool
-            If True, use psana2 geometry conversion
+        wavelength : float, optional
+            X-ray wavelength in meters. If provided (non-default 1e-10),
+            overrides the value read from the h5 file.
 
         Returns
         -------
@@ -101,11 +167,8 @@ class BayFAIOpt:
             Minimum intensity value for identifying Bragg peaks
         """
         self.detector = self.build_detector(detname)
-        self.powder = self.generate_powder(powder, detname, smooth, is_psana2)
-        self.stacked_powder = np.reshape(self.powder, self.detector.shape)
-        pos_pix = self.powder[self.powder > 0]
-        self.Imin = np.percentile(pos_pix, 95)
-        self.calibrant = self.define_calibrant(calibrant, wavelength)
+        self.powder = self.generate_powder(h5, detname, Imin)
+        self.calibrant = self.define_calibrant(calibrant, h5, wavelength)
         self.set_search_space(fixed)
 
     def extract_powder(self, powder_path: str, detname: str) -> npt.NDArray[np.float64]:
@@ -115,34 +178,38 @@ class BayFAIOpt:
         Parameters
         ----------
         powder_path : str
-            Path to the h5 file containing the powder data.
+            Path to the h5 or npy file containing the powder data.
 
         Returns
         -------
         powder : npt.NDArray[np.float64]
             The extracted powder image.
         """
-        with h5py.File(powder_path) as h5:
-            try:
-                powder = h5[f"Sums/{detname}_calib_max"][()]
-            except KeyError:
-                print(
-                    f"Cannot find {detname} Max powder in {powder_path}, defaulting to {detname} Sum instead."
-                )
+        if powder_path.endswith(".npy"):
+            powder = np.load(powder_path)
+            return powder
+        else:
+            with h5py.File(powder_path) as h5:
                 try:
-                    powder = h5[f"Sums/{detname}_calib"][()]
+                    powder = h5[f"Sums/{detname}_calib_max"][()]
                 except KeyError:
-                    print(
-                        f"Cannot find {detname} Sum powder in {powder_path}. Exiting..."
+                    logger.warning(
+                        f"Cannot find {detname} Max powder in {powder_path}, defaulting to {detname} Sum instead."
                     )
-                    raise
-        return powder
+                    try:
+                        powder = h5[f"Sums/{detname}_calib"][()]
+                    except KeyError:
+                        logger.error(
+                            f"Cannot find {detname} Sum powder in {powder_path}. Exiting..."
+                        )
+                        raise
+            return powder
 
     def preprocess_powder(
         self,
         powder: npt.NDArray[np.float64],
         mask: npt.NDArray[np.integer],
-        smooth: bool = False,
+        Imin: float = 95,
     ) -> npt.NDArray[np.float64]:
         """
         Preprocess extracted powder for enhancing optimization
@@ -153,19 +220,19 @@ class BayFAIOpt:
             Powder image to use for calibration
         mask : npt.NDArray[np.integer]
             Pixel mask to apply to the powder image
-        smooth : bool, optional
-            If True, apply smoothing to the powder image.
+        Imin : float, optional
+            Minimum intensity percentile threshold for Bragg peak detection.
         """
+        powder = np.asarray(powder, dtype=np.float64).copy()
+        good = mask != 0
+        powder[~good] = 0
         powder[powder < 0] = 0
-        if smooth:
-            for p in range(powder.shape[0]):
-                gradx = np.gradient(powder[p], axis=0)
-                grady = np.gradient(powder[p], axis=1)
-                powder[p] = np.sqrt(gradx**2 + grady**2)
-        powder[mask == 0] = 0
-        self.powder_binary = (np.where(powder > np.mean(powder) + np.std(powder), 1.0, 0.0)).astype(np.float64)
+        self.powder = powder
+        self.stacked_powder = np.reshape(self.powder, self.detector.shape)
+        non_zero_pixels = self.powder[self.powder > 0]
+        self.Imin = np.percentile(non_zero_pixels, Imin)
         return powder
-    
+
     def assemble_image(
         self, powder: npt.NDArray[np.float64]
     ) -> npt.NDArray[np.float64]:
@@ -188,7 +255,10 @@ class BayFAIOpt:
         return assembled_powder
 
     def generate_powder(
-        self, powder_path: str, detname: str, smooth: bool = False, is_psana2: bool = False,
+        self,
+        powder_path: str,
+        detname: str,
+        Imin: float = 95,
     ) -> npt.NDArray[np.float64]:
         """
         Generate a preprocessed powder image from smalldata reduction.
@@ -196,17 +266,20 @@ class BayFAIOpt:
         Parameters
         ----------
         powder_path : str
-            Path to the h5 file containing the powder data.
+            Path to the h5 or npy file containing the powder data.
         detname : str
             Name of the detector
-        smooth : bool, optional
-            If True, apply smoothing to the powder image.
+        Imin : float, optional
+            Minimum intensity percentile threshold for Bragg peak detection.
         """
         mask = self.detector.geo.get_pixel_mask(mbits=3)
-        if not is_psana2:
+        # psana1 returns a leading singleton axis, e.g. (1, 8, 512, 1024), while
+        # psana2 returns (8, 512, 1024). Only squeeze when the axis is actually
+        # there, otherwise psana2 raises on the unconditional squeeze.
+        if mask.ndim > 3 and mask.shape[0] == 1:
             mask = np.squeeze(mask, axis=0)
         powder = self.extract_powder(powder_path, detname)
-        powder = self.preprocess_powder(powder, mask, smooth)
+        powder = self.preprocess_powder(powder, mask, Imin)
         self.assembled_powder = self.assemble_image(powder)
         return powder
 
@@ -224,24 +297,22 @@ class BayFAIOpt:
         pyFAI.Detector
             Configured pyFAI detector object
         """
-        in_file = get_geometry(detname)
-        detector = PsanaToPyFAI.convert(in_file, detname)
+        metrology = get_geometry(detname)
+        detector = PsanaToPyFAI.convert(in_file=metrology, detname=detname)
         return detector
 
-    def update_geometry(self, detname: str, out_file: str) -> pyFAI.detectors.Detector:
+    def update_geometry(self, out_file: str) -> pyFAI.detectors.Detector:
         """
         Update the geometry and write a new .poni, .geom and .data file
 
         Parameters
         ----------
-        detname : str
-            Name of the detector
+        optimizer : BayesGeomOpt
+            Optimizer object
         out_file : str
             Path to the output file
         """
         path = os.path.dirname(out_file)
-        if not os.path.exists(path):
-            os.makedirs(path, exist_ok=True)
         poni_file = os.path.join(path, f"r{self.run:0>4}.poni")
         self.gr.save(poni_file)
         PyFAIToPsana.convert(
@@ -255,60 +326,57 @@ class BayFAIOpt:
             detector=self.detector,
             out_file=geom_file,
         )
-        detector = PsanaToPyFAI.convert(out_file, detname)
-        return detector
 
-    def define_calibrant(self, calibrant_name: str, wavelength: float) -> pyFAI.calibrant.Calibrant:
+    def define_calibrant(
+        self,
+        calibrant_name: str,
+        h5: str,
+        wavelength: float = 1e-10,
+    ) -> pyFAI.calibrant.Calibrant:
         """
-        Define calibrant for optimization with appropriate wavelength
+        Define calibrant for optimization with appropriate wavelength.
 
         Parameters
         ----------
         calibrant_name : str
             Name of the calibrant
-        wavelength: float
-            X-ray beam wavelength
+        h5 : str
+            Path to the smalldata h5 file containing the photon energy.
+        wavelength : float, optional
+            X-ray wavelength in meters.
         """
         self.calibrant_name = calibrant_name
         calibrant = CALIBRANT_FACTORY(calibrant_name)
+        if wavelength != 1e-10:
+            logger.info(f"Using user-provided wavelength {wavelength} m")
+        else:
+            try:
+                with h5py.File(h5) as f:
+                    for key in PHOTON_ENERGY_KEYS:
+                        if key not in f:
+                            continue
+                        energies = np.asarray(f[key][()], dtype=float)
+                        energies = energies[np.isfinite(energies) & (energies > 0)]
+                        if energies.size == 0:
+                            continue
+                        photon_energy = float(np.mean(energies))
+                        wavelength = 1.23984193e-6 / photon_energy
+                        logger.info(
+                            f"Read {photon_energy:.2f} eV from {key} "
+                            f"-> wavelength {wavelength:.4e} m"
+                        )
+                        break
+                    else:
+                        raise KeyError(
+                            f"None of {PHOTON_ENERGY_KEYS} hold usable photon "
+                            f"energies in the h5 file"
+                        )
+            except Exception as e:
+                logger.warning(
+                    f"Could not read photon energy from {h5} due to {e}, defaulting to provided wavelength {wavelength} m"
+                )
         calibrant.wavelength = wavelength
         return calibrant
-    
-    def azimuthal_integration(self) -> tuple:
-        """
-        Compute the radial intensity profile of an image.
-
-        Parameters
-        ----------
-        powder : numpy.ndarray, shape (n,m)
-            detector image
-        detector : pyFAI.Detector, shape (n,m)
-            PyFAI detector object
-        params : list, optional
-            6 Geometry parameters: distance, x-shift, y-shift, Rx, Ry, Rz
-        """
-        if self.params is not None:
-            ai = AzimuthalIntegrator(
-                detector=self.detector,
-                dist=self.params[0],
-                poni1=self.params[1],
-                poni2=self.params[2],
-                rot1=self.params[3],
-                rot2=self.params[4],
-                rot3=self.params[5],
-                wavelength=self.calibrant.wavelength,
-            )
-        else:
-            ai = AzimuthalIntegrator(detector=self.detector,
-                dist=0.1,
-                wavelength=self.calibrant.wavelength
-            )
-        q, I = ai.integrate1d(
-            self.stacked_powder,
-            npt=256,
-            unit="q_A^-1",
-            method="cython")
-        return q, I
 
     def set_search_space(self, fixed: list) -> None:
         """
@@ -442,9 +510,9 @@ class BayFAIOpt:
             X_norm_samples = X_norm[idx_samples]
             return X_samples, X_norm_samples
 
-    def number_bragg_peaks(self, sample, Imin, max_rings):
+    def extract_data(self, sample, Imin, max_rings, pts_per_deg):
         """
-        Evaluate score at a given sampled geometry based on number of Bragg peaks found.
+        Extract data points for a given sampled geometry.
 
         Parameters
         ----------
@@ -454,11 +522,13 @@ class BayFAIOpt:
             Minimum intensity threshold
         max_rings : int
             Maximum number of rings to consider
+        pts_per_deg : int
+            Number of points per degree for extraction
 
         Returns
         -------
-        score : float
-            Scalar score for Bayesian optimization
+        data : np.ndarray
+            Extracted data points
         """
         dist, poni1, poni2, rot1, rot2, rot3 = sample
         geom_sample = Geometry(
@@ -472,17 +542,16 @@ class BayFAIOpt:
             wavelength=self.calibrant.wavelength,
         )
         sg = SingleGeometry(
-            "Score Geometry",
+            "Data Extraction Geometry",
             self.stacked_powder,
             calibrant=self.calibrant,
             detector=self.detector,
             geometry=geom_sample,
         )
-        sg.extract_cp(max_rings=max_rings, pts_per_deg=1, Imin=Imin)
-        score = len(sg.geometry_refinement.data)
-        return score
+        sg.extract_cp(max_rings=max_rings, pts_per_deg=pts_per_deg, Imin=Imin)
+        return sg.geometry_refinement.data
 
-    def theta_residual(self, sample, Imin, max_rings):
+    def score(self, sample, Imin, max_rings, pts_per_deg):
         """
         Evaluate score at a given sampled geometry based on the residual between predicted and observed Bragg peak positions.
 
@@ -518,7 +587,7 @@ class BayFAIOpt:
             detector=self.detector,
             geometry=geom_sample,
         )
-        sg.extract_cp(max_rings=max_rings, pts_per_deg=1, Imin=Imin)
+        sg.extract_cp(max_rings=max_rings, pts_per_deg=pts_per_deg, Imin=Imin)
         data = sg.geometry_refinement.data
 
         if data is None or len(data) == 0:
@@ -527,197 +596,9 @@ class BayFAIOpt:
         ix = data[:, 0]
         iy = data[:, 1]
         ring = data[:, 2].astype(np.int32)
-        score = -np.log(sg.geometry_refinement.residu2(sample, ix, iy, ring) / len(data))
-        return score
-
-    def q_residual(self, sample, Imin, max_rings):
-        """
-        Evaluate score at a given sampled geometry based on the q-peaks
-        found in the azimuthal integration.
-
-        Parameters
-        ----------
-        sample: list
-            Geometry Parameters
-        Imin: float
-            Minimum intensity threshold
-        max_rings: int
-            Maximum number of rings to consider
-        """
-        profile, ttha = azimuthal_integration(self.powder, self.detector, sample)
-        ttha_min = np.min(ttha)
-        ttha_max = np.max(ttha)
-
-        expected_rings = np.array(self.calibrant.get_2th())
-        valid_rings = (expected_rings >= ttha_min) & (expected_rings <= ttha_max)
-
-        min_ring_delta = np.min(np.diff(expected_rings))
-        min_resolution = np.min(np.diff(ttha))
-        min_delta = min_ring_delta / min_resolution
-
-        observed_rings = np.zeros_like(expected_rings)
-        mean = np.mean(profile)
-        std = np.std(profile)
-        height = max(Imin, mean)
-        prominence = std
-        peaks, _ = find_peaks(profile, distance=min_delta, height=height, prominence=prominence)
-        detected_rings = ttha[peaks]
-
-        num_rings = min(len(peaks), max_rings)
-        if num_rings == 0:
-            return np.sum((observed_rings - expected_rings) ** 2) / len(expected_rings)
-
-        ring_count = 0
-        for i, is_valid in enumerate(valid_rings):
-            if not is_valid:
-                continue
-            if ring_count >= num_rings:
-                break
-            observed_rings[i] = detected_rings[ring_count]
-            ring_count += 1
-
-        res = np.sum((observed_rings - expected_rings) ** 2) / len(expected_rings)
-        score = -np.log(res)
-        return score
-
-    def q_residual_v2(self, sample, Imin, max_rings):
-        """
-        Evaluate score at a given sampled geometry based on the q-peaks
-        found in the azimuthal integration.
-
-        Parameters
-        ----------
-        sample: list
-            Geometry Parameters
-        Imin: float
-            Minimum intensity threshold
-        max_rings: int
-            Maximum number of rings to consider
-        """
-        profile, ttha = azimuthal_integration(self.powder, self.detector, sample)
-        ttha_min = np.min(ttha)
-        ttha_max = np.max(ttha)
-
-        tth = np.array(self.calibrant.get_2th())
-        tth_min = np.zeros_like(tth)
-        tth_max = np.zeros_like(tth)
-        delta = (tth[1:] - tth[:-1]) / 10.0
-        tth_max[:-1] = delta
-        tth_max[-1] = delta[-1]
-        tth_min[1:] = -delta
-        tth_min[0] = -delta[0]
-        tth_max += tth
-        tth_min += tth
-        valid_rings = (tth >= ttha_min) & (tth <= ttha_max)
-        expected_rings = tth[valid_rings][:max_rings]
-        lower = tth_min[valid_rings][:max_rings]
-        upper = tth_max[valid_rings][:max_rings]
-
-        if len(expected_rings) == 0:
-            return 1
-
-        res = 0.0
-        for i, expected_ring in enumerate(expected_rings):
-            mask = (ttha >= lower[i]) & (ttha <= upper[i])
-            mean = np.mean(profile[mask])
-            std = np.std(profile[mask])
-            height = max(Imin, mean)
-            peaks, _ = find_peaks(profile[mask], height=height, prominence=std)
-            if len(peaks) == 0:
-                res += expected_ring**2
-            else:
-                observed_ring = ttha[mask][peaks]
-                expected_ring = np.tile(expected_ring, (len(observed_ring),))
-                res += np.sum((observed_ring - expected_ring) ** 2)
-        res /= len(expected_rings)
-        score = -np.log(res)
-        return score
-
-    def powder_residual(self, sample):
-        """
-        Evaluate the fitting quality of the refined parameters by comparing
-        the expected and observed ring positions.
-
-        Parameters
-        ----------
-        sample : list
-            Refined geometry parameters
-
-        Returns
-        -------
-        fit_score : float
-            Fitting quality score
-        """
-        theta = calculate_2theta(self.detector, sample)
-
-        fit = np.zeros_like(theta)
-        tth = np.array(self.calibrant.get_2th())
-        upper = np.zeros_like(tth)
-        lower = np.zeros_like(tth)
-        delta = (tth[1:] - tth[:-1]) / 10.0
-        upper[:-1] = delta
-        upper[-1] = delta[-1]
-        lower[1:] = -delta
-        lower[0] = -delta[0]
-        upper += tth
-        lower += tth
-
-        for i in range(len(tth)):
-            mask = (theta >= lower[i]) & (theta <= upper[i])
-            fit[mask] = 1.0
-        fit_score = np.mean((fit - self.powder_binary) ** 2)
-        score = -np.log(fit_score)
-        return score
-
-    def ring_intensity(self, sample, Imin, max_rings):
-        """
-        Evaluate score at a given sampled geometry based on the mean intensity
-        of the found peaks in the azimuthal integration.
-
-        Parameters
-        ----------
-        sample: list
-            Geometry Parameters
-        Imin: float
-            Minimum intensity threshold
-        max_rings: int
-            Maximum number of rings to consider
-        """
-        profile, ttha = azimuthal_integration(self.powder, self.detector, sample)
-        ttha_min = np.min(ttha)
-        ttha_max = np.max(ttha)
-
-        tth = np.array(self.calibrant.get_2th())
-        tth_min = np.zeros_like(tth)
-        tth_max = np.zeros_like(tth)
-        delta = (tth[1:] - tth[:-1]) / 10.0
-        tth_max[:-1] = delta
-        tth_max[-1] = delta[-1]
-        tth_min[1:] = -delta
-        tth_min[0] = -delta[0]
-        tth_max += tth
-        tth_min += tth
-        valid_rings = (tth >= ttha_min) & (tth <= ttha_max)
-        expected_rings = tth[valid_rings][:max_rings]
-        lower = tth_min[valid_rings][:max_rings]
-        upper = tth_max[valid_rings][:max_rings]
-
-        if len(expected_rings) == 0:
-            return 0.0
-
-        score = 0.0
-        for i in range(len(expected_rings)):
-            mask = (ttha >= lower[i]) & (ttha <= upper[i])
-            mean = np.mean(profile[mask])
-            std = np.std(profile[mask])
-            height = max(Imin, mean)
-            peaks, _ = find_peaks(profile[mask], height=height, prominence=std)
-            if len(peaks) == 0:
-                continue
-            else:
-                score += np.min(profile[mask][peaks])
-
-        score /= len(expected_rings)
+        score = -np.log(
+            sg.geometry_refinement.residu2(sample, ix, iy, ring) / len(data)
+        )
         return score
 
     def estimate_uncertainty(self, refinement, rel_eps=1e-3, abs_eps=1e-4):
@@ -797,31 +678,27 @@ class BayFAIOpt:
         eigs, _ = np.linalg.eigh(hessian)
         if np.any(eigs <= 0):
             sigmas = [np.inf] * size
-            is_min = False
             penalty = 0.0
-            return sigmas, is_min, penalty
+            return sigmas, penalty
 
         cov = np.linalg.inv(hessian)
         sigmas = f_min * np.diag(cov) / dof
         sigmas = np.sqrt(sigmas)
-        is_min = True
-        penalty = -np.log(np.linalg.det(cov)) / 2 
-        return sigmas, is_min, penalty
+        penalty = -np.log(np.linalg.det(cov))
+        return sigmas, penalty
 
-    def gradient_descent(self, best_param, resolutions, Imin, max_rings, step=5):
+    def gradient_descent(self, sample, data, resolutions, step=5):
         """
-        Evaluate geometry found by BO on pyFAI refinement tool
+        Run gradient descent refinement on the given sample parameters using pyFAI.
 
         Parameters
         ----------
-        best_param : list
-            Best parameters found by Bayesian optimization
+        sample : list
+            Sample parameters for the refinement
+        data : np.ndarray
+            Data used for the refinement
         resolutions : dict
             Resolution per parameter for restricted refinement
-        Imin : float
-            Minimum intensity threshold
-        max_rings : int
-            Maximum number of rings to consider
         step : int
             Size of the refinement space around best parameters
 
@@ -833,15 +710,17 @@ class BayFAIOpt:
             Estimated uncertainties for each parameter
         penalty : float
             Penalty from uncertainty estimation
-        size : int
-            Number of Bragg peaks used in refinement
-        params : dict
+        params : list
             Refined parameters
-        is_min : bool
-            Flag indicating if a local minimum was found
         """
-        dist, poni1, poni2, rot1, rot2, rot3 = best_param
-        best_geom = Geometry(
+        dist, poni1, poni2, rot1, rot2, rot3 = sample
+
+        if data is None or len(data) == 0:
+            return 0.0, [np.inf] * 5, 0.0, sample
+
+        gr = GeometryRefinement(
+            data=data,
+            calibrant=self.calibrant,
             dist=dist,
             poni1=poni1,
             poni2=poni2,
@@ -851,40 +730,22 @@ class BayFAIOpt:
             detector=self.detector,
             wavelength=self.calibrant.wavelength,
         )
-        sg = SingleGeometry(
-            "Best Geometry",
-            self.stacked_powder,
-            calibrant=self.calibrant,
-            detector=self.detector,
-            geometry=best_geom,
-        )
-        sg.extract_cp(max_rings=max_rings, pts_per_deg=1, Imin=Imin)
-        self.sg = sg
-
-        if sg.geometry_refinement.data is None or len(sg.geometry_refinement.data) == 0:
-            score = 0.0
-            sigma = [np.inf] * 5
-            penalty = 0.0
-            size = 0
-            is_min = False
-            return score, sigma, penalty, size, best_param, is_min
-
-        sg.geometry_refinement.set_dist_min(dist - step * resolutions["dist"])
-        sg.geometry_refinement.set_dist_max(dist + step * resolutions["dist"])
-        sg.geometry_refinement.set_poni1_min(poni1 - step * resolutions["poni1"])
-        sg.geometry_refinement.set_poni1_max(poni1 + step * resolutions["poni1"])
-        sg.geometry_refinement.set_poni2_min(poni2 - step * resolutions["poni2"])
-        sg.geometry_refinement.set_poni2_max(poni2 + step * resolutions["poni2"])
-        sg.geometry_refinement.set_rot1_min(rot1 - step * resolutions["rot1"])
-        sg.geometry_refinement.set_rot1_max(rot1 + step * resolutions["rot1"])
-        sg.geometry_refinement.set_rot2_min(rot2 - step * resolutions["rot2"])
-        sg.geometry_refinement.set_rot2_max(rot2 + step * resolutions["rot2"])
+        gr.set_dist_min(dist - step * resolutions["dist"])
+        gr.set_dist_max(dist + step * resolutions["dist"])
+        gr.set_poni1_min(poni1 - step * resolutions["poni1"])
+        gr.set_poni1_max(poni1 + step * resolutions["poni1"])
+        gr.set_poni2_min(poni2 - step * resolutions["poni2"])
+        gr.set_poni2_max(poni2 + step * resolutions["poni2"])
+        gr.set_rot1_min(rot1 - step * resolutions["rot1"])
+        gr.set_rot1_max(rot1 + step * resolutions["rot1"])
+        gr.set_rot2_min(rot2 - step * resolutions["rot2"])
+        gr.set_rot2_max(rot2 + step * resolutions["rot2"])
         fix = ["rot3", "wavelength"]
-        score = -np.log(sg.geometry_refinement.refine3(fix=fix))
-        sigma, is_min, penalty = self.estimate_uncertainty(sg.geometry_refinement)
-        params = sg.geometry_refinement.param
-        size = len(sg.geometry_refinement.data)
-        return score, sigma, penalty, size, params, is_min
+        score = -np.log(gr.refine3(fix=fix))
+        sigma, penalty = self.estimate_uncertainty(gr)
+        params = gr.param
+        self.gr = gr
+        return score, sigma, penalty, params
 
     @ignore_warnings(category=ConvergenceWarning)
     def bayes_opt_distance(
@@ -893,14 +754,14 @@ class BayFAIOpt:
         center,
         bounds,
         res,
-        score,
         n_samples,
         n_iterations,
         Imin,
         max_rings,
+        pts_per_deg,
         beta=1.96,
-        step=5,
         prior=True,
+        step=5,
         seed=None,
     ):
         """
@@ -916,8 +777,6 @@ class BayFAIOpt:
             Dictionary of bounds for each parameter
         res : dict
             Dictionary of resolution for each parameter
-        score : str
-            Scoring method to use: 'bragg', 'residual', 'residual_v2', 'theta_residual', 'intensity'
         n_samples : int
             Number of samples to initialize the Gaussian Process
         n_iterations : int
@@ -926,12 +785,14 @@ class BayFAIOpt:
             Minimum intensity threshold for identifying Bragg peaks
         max_rings : int
             Maximum number of rings to search for Bragg peaks
+        pts_per_deg : float
+            Number of Bragg peaks to extract per azimuthal degree
         beta : float
             Exploration-exploitation trade-off parameter for UCB acquisition function
-        step : int
-            Size of the refinement space around best parameters
         prior : bool
             Whether to sample initial points around the center or randomly
+        step : int
+            Step size for the gradient descent refinement
         seed : optional, int
             Random seed for reproducibility
         """
@@ -950,16 +811,7 @@ class BayFAIOpt:
         bo_history = {"params": [], "scores": []}
         y = np.zeros((n_samples))
         for i in range(n_samples):
-            if score == "bragg":
-                y[i] = self.number_bragg_peaks(X_samples[i], Imin, max_rings)
-            elif score == "residual":
-                y[i] = self.q_residual(X_samples[i], Imin, max_rings)
-            elif score == "residual_v2":
-                y[i] = self.q_residual_v2(X_samples[i], Imin, max_rings)
-            elif score == "theta_residual":
-                y[i] = self.theta_residual(X_samples[i], Imin, max_rings)
-            elif score == "intensity":
-                y[i] = self.ring_intensity(X_samples[i], Imin, max_rings)
+            y[i] = self.score(X_samples[i], Imin, max_rings, pts_per_deg)
             bo_history["params"].append(X_samples[i])
             bo_history["scores"].append(y[i])
 
@@ -967,19 +819,19 @@ class BayFAIOpt:
             result = {
                 "bo_history": bo_history,
                 "params": [dist, 0, 0, 0, 0, 0],
+                "data": [],
                 "score": 0.0,
-                "sigma": [np.inf] * 5,
-                "penalty": 0.0,
-                "size": 0,
                 "best_idx": 0,
-                "is_min": False,
             }
-            print(
-                f"All samples have score 0 for dist={dist}. Skipping Bayesian Optimization.", flush=True,
-            )
+            if self.rank == 0:
+                logger.warning(
+                    "Skipping Bayesian Optimization because all initial scores are zero."
+                )
+                logger.warning(
+                    "Initial geometry guess is too far from optimum. Please refine the search space."
+                )
             return result
 
-        y[np.isnan(y)] = 0
         if np.std(y) != 0:
             y_norm = (y - np.mean(y)) / np.std(y)
         else:
@@ -1003,19 +855,10 @@ class BayFAIOpt:
             visited_idx.append(next)
 
             # 7. Compute the score of the next point
-            if score == "bragg":
-                yi = self.number_bragg_peaks(X_samples[i], Imin, max_rings)
-            elif score == "residual":
-                yi = self.q_residual(X_samples[i], Imin, max_rings)
-            elif score == "residual_v2":
-                yi = self.q_residual_v2(X_samples[i], Imin, max_rings)
-            elif score == "theta_residual":
-                yi = self.theta_residual(X_samples[i], Imin, max_rings)
-            elif score == "intensity":
-                yi = self.ring_intensity(X_samples[i], Imin, max_rings)
-            y = np.append(y, [yi], axis=0)
+            score = self.score(next_sample, Imin, max_rings, pts_per_deg)
+            y = np.append(y, [score], axis=0)
             bo_history["params"].append(next_sample)
-            bo_history["scores"].append(yi)
+            bo_history["scores"].append(score)
             X_samples = np.append(X_samples, [X[next]], axis=0)
             X_norm_samples = np.append(X_norm_samples, [X_norm[next]], axis=0)
             if np.std(y) != 0:
@@ -1029,11 +872,12 @@ class BayFAIOpt:
         # 9. Gather results
         best_idx = np.argmax(y)
         best_param = X_samples[best_idx]
-        score, sigma, penalty, size, params, is_min = self.gradient_descent(
-            best_param, res, Imin, max_rings, step
+        data = self.extract_data(best_param, Imin, max_rings, pts_per_deg)
+        score, sigma, penalty, params = self.gradient_descent(
+            best_param, data, res, step
         )
-        print(
-            f"Rank {self.rank} dist={dist:.4f}m: score={score}", flush=True,
+        logger.info(
+            f"Rank {self.rank} dist={dist:.4f}m: score={score:3e}, penalty={penalty:3e}"
         )
         result = {
             "bo_history": bo_history,
@@ -1041,9 +885,7 @@ class BayFAIOpt:
             "score": score,
             "sigma": sigma,
             "penalty": penalty,
-            "size": size,
             "best_idx": best_idx,
-            "is_min": is_min,
         }
         return result
 
@@ -1054,12 +896,14 @@ class BayFAIOpt:
         res,
         n_samples,
         n_iterations,
+        Imin,
         max_rings,
+        pts_per_deg,
         beta=1.96,
-        step=5,
         prior=True,
+        step=5,
+        lbda=0.1,
         seed=None,
-        score="bragg",
     ):
         """
         Run BayFAI optimization.
@@ -1080,67 +924,68 @@ class BayFAIOpt:
             Number of samples to initialize the Gaussian Process
         n_iterations : int
             Number of iterations of Bayesian Optimization
+        Imin : float
+            Minimum intensity threshold for identifying Bragg peaks
         max_rings : int
             Maximum number of rings to consider
+        pts_per_deg: float
+            Number of Bragg peaks to extract per azimuthal degree
         beta : float
             Exploration-exploitation trade-off parameter for UCB acquisition function
+        step : int
+            Size of the refinement space around best parameters
         prior : bool
             Whether to sample initial points around the center or randomly
-        seed : int
+        seed : optional, int
             Random seed for reproducibility
-        score : str
-            Score function to use
         """
+        # Distribute distances across MPI ranks
         dist = self.distribute_distances(center, res)
-        print(
-            f"Rank {self.rank}: Running Bayesian Optimization on distance {dist:.4f} m", flush=True,
+        logger.info(
+            f"Rank {self.rank}: Running Bayesian Optimization on distance {dist:.4f} m"
         )
 
         bayfai_hyperparams = {
             "n_samples": n_samples,
             "n_iterations": n_iterations,
-            "Imin": self.Imin,
+            "Imin": Imin,
             "max_rings": max_rings,
+            "pts_per_deg": pts_per_deg,
             "beta": beta,
             "step": step,
             "prior": prior,
             "seed": seed,
         }
 
+        # Run BO on the distributed distance for this rank
         results = self.bayes_opt_distance(
             dist,
             center,
             bounds,
             res,
-            score,
             **bayfai_hyperparams,
         )
 
+        # Gather BayFAI results from all ranks
         self.comm.Barrier()
-
         self.scan = {}
         self.scan["bo_history"] = self.comm.gather(results["bo_history"], root=0)
         self.scan["params"] = self.comm.gather(results["params"], root=0)
         self.scan["score"] = self.comm.gather(results["score"], root=0)
-        self.scan["size"] = self.comm.gather(results["size"], root=0)
         self.scan["sigma"] = self.comm.gather(results["sigma"], root=0)
         self.scan["penalty"] = self.comm.gather(results["penalty"], root=0)
         self.scan["best_idx"] = self.comm.gather(results["best_idx"], root=0)
-        self.scan["is_min"] = self.comm.gather(results["is_min"], root=0)
-        self.finalize()
 
-    def finalize(self, lbda=0.2):
+        # Winner selection
         if self.rank == 0:
             for key in self.scan.keys():
                 self.scan[key] = np.array([item for item in self.scan[key]])
-            self.valid = self.scan["is_min"]
-            self.invalid = np.where(~self.valid)[0]
+
             self.final_score = self.scan["score"] + lbda * self.scan["penalty"]
             self.index = np.argmax(self.final_score)
             self.bo_history = self.scan["bo_history"][self.index]
             self.params = self.scan["params"][self.index]
             self.neglog_score = self.scan["score"][self.index]
-            self.size = self.scan["size"][self.index]
             self.sigma = self.scan["sigma"][self.index]
             self.penalty = self.scan["penalty"][self.index]
             self.best_idx = self.scan["best_idx"][self.index]
@@ -1156,116 +1001,729 @@ class BayFAIOpt:
                 wavelength=self.calibrant.wavelength,
             )
 
-    def grid_search_distance(
-        self,
-        dist,
-        center,
-        bounds,
-        res,
-        max_rings,
-        score,
-        out_dir,
-    ):
+    def plot_radial_integration(self, result1d, calibrant, ax=None):
         """
-        Run Grid Search on a fixed distance.
+        Plot the radial integration of a powder image
 
         Parameters
         ----------
-        dist : float
-            Distanc
+        result1d : pyFAI.containers.Integrate1dResult
+            Result from AzimuthalIntegrator.integrate1d, containing .radial (q in Å⁻¹) and .intensity.
+        calibrant : Calibrant
+            Calibrant object
+        ax : plt.Axes
+            Matplotlib axes
         """
-        # 1. Create the search space
-        X, _ = self.create_search_space(dist, center, bounds, res)
+        if ax is None:
+            fig, ax = plt.subplots()
 
-        # 2. Evaluate Points
-        history = {"params": [], "scores": []}
-        Imin = np.percentile(self.powder, 95)
-        y = np.zeros((X.shape[0]))
-        for i in range(X.shape[0]):
-            if score == "bragg":
-                y[i] = self.number_bragg_peaks(X[i], Imin, max_rings)
-            elif score == "residual":
-                y[i] = self.q_residual(X[i], Imin, max_rings)
-            elif score == "residual_v2":
-                y[i] = self.q_residual_v2(X[i], Imin, max_rings)
-            elif score == "theta_residual":
-                y[i] = self.theta_residual(X[i], Imin, max_rings)
-            elif score == "intensity":
-                y[i] = self.ring_intensity(X[i], Imin, max_rings)
-            elif score == "powder_residual":
-                y[i] = self.powder_residual(X[i])
-            history["params"].append(X[i])
-            history["scores"].append(y[i])
-        
-        # 3. Save results
-        filename = f"{self.exp}_r{self.run:04d}_score_{score}_dist_{str(dist).replace('.', '')}"
-        np.save(f"{out_dir}/{filename}.npy", history["scores"])
-        self.params = history["params"]
+        unit = RADIAL_UNITS["q_A^-1"]
+        ax.plot(result1d.radial, result1d.intensity, color="black", linewidth=0.8)
 
-        return history
+        x_values = calibrant.get_peaks(unit)
+        if x_values is not None:
+            for x in x_values:
+                line = lines.Line2D(
+                    [x, x],
+                    ax.axis()[2:4],
+                    color="red",
+                    linestyle="--",
+                    linewidth=0.8,
+                    alpha=0.7,
+                )
+                ax.add_line(line)
 
-    def grid_search(
-        self,
-        center,
-        bounds,
-        res,
-        max_rings,
-        score,
-        out_dir,
-    ):
+        ax.set_title("Radial Profile", fontsize=6)
+        if unit:
+            ax.set_xlabel(unit.label, fontsize=6)
+        ax.set_ylabel("Intensity", fontsize=6)
+        ax.tick_params(axis="x", labelsize=4)
+        ax.tick_params(axis="y", labelsize=4)
+
+    def plot_2d_integration(self, result2d, calibrant, ax=None):
         """
-        Run Grid Search on all parameter space
-        Split the distance parameter across MPI ranks.
-        Run Grid Search on each rank with fixed distance.
+        Plot the 2D azimuthal integration (cake plot) of a powder image.
 
         Parameters
         ----------
-        center : dict
-            Dictionary of center values for each parameter
-        bounds : dict
-            Dictionary of bounds for each parameter
-        res : dict
-            Dictionary of resolution for each parameter
-        max_rings : int
-            Maximum number of rings to consider
-        score : str
-            Score function to use
-        out_dir : str
-            Output Directory path
+        result2d : pyFAI.containers.Integrate2dResult
+            Result from AzimuthalIntegrator.integrate2d, containing .intensity,
+            .radial (q in Å⁻¹), and .azimuthal (χ in °).
+        calibrant : pyFAI.calibrant.Calibrant
+            Calibrant object for Bragg peak overlay.
+        ax : plt.Axes, optional
+            Matplotlib axes.
         """
-        dist = self.distribute_distances(center, res)
-        print(
-            f"Rank {self.rank}: Running Bayesian Optimization on distance {dist:.4f} m", flush=True,
+        if ax is None:
+            _fig, ax = plt.subplots()
+
+        cake = result2d.intensity
+        non_zero = cake[cake > 0]
+        vmin = np.percentile(non_zero, 5) if len(non_zero) > 0 else 0
+        vmax = np.percentile(non_zero, 95) if len(non_zero) > 0 else 1
+
+        ax.imshow(
+            cake,
+            extent=[
+                result2d.radial.min(),
+                result2d.radial.max(),
+                result2d.azimuthal.min(),
+                result2d.azimuthal.max(),
+            ],
+            aspect="auto",
+            origin="lower",
+            vmin=vmin,
+            vmax=vmax,
+            cmap="viridis",
         )
 
-        history = self.grid_search_distance(
-            dist,
-            center,
-            bounds,
-            res,
-            max_rings,
-            score,
-            out_dir,
+        unit = RADIAL_UNITS["q_A^-1"]
+        peaks = calibrant.get_peaks(unit)
+        if peaks is not None:
+            for q_peak in peaks:
+                ax.axvline(
+                    q_peak, color="red", linestyle="--", linewidth=0.8, alpha=0.7
+                )
+
+        ax.set_xlabel(unit.label, fontsize=6)
+        ax.set_ylabel(r"$\chi$ (°)", fontsize=6)
+        ax.tick_params(axis="x", labelsize=4)
+        ax.tick_params(axis="y", labelsize=4)
+        ax.set_title("2D Azimuthal Integration", fontsize=6)
+
+    def plot_bo_history(self, ax):
+        """
+        Plot the Bayesian Optimization history across all ranks
+
+        Parameters
+        ----------
+        bo_history : list
+            List of all the BO histories with keys 'params' and 'scores' for each rank-distance
+        ax : plt.Axes
+            Matplotlib axes
+        """
+        bo_history = self.scan["bo_history"]
+        iters = np.arange(len(bo_history[self.index]["scores"]))
+        ax.plot(
+            iters,
+            bo_history[self.index]["scores"],
+            marker="o",
+            markersize=3,
+            linestyle="--",
+            linewidth=0.8,
+            color="black",
+            markerfacecolor="red",
+            markeredgecolor="black",
+            label=f"Best Distance (m): {self.distances[self.index]:.3f}",
+        )
+        ax.legend(fontsize=6)
+        ax.set_xlabel("Iteration", fontsize=6)
+        ax.set_ylabel("Score", fontsize=6)
+        ax.yaxis.get_offset_text().set_fontsize(6)
+        ax.tick_params(axis="x", labelsize=6)
+        ax.tick_params(axis="y", labelsize=6)
+        ax.set_title("Bayesian Optimization History", fontsize=6)
+
+    def plot_score_distance_scan(self, ax):
+        """
+        Plot the score scan over distance
+
+        Parameters
+        ----------
+        ax : plt.Axes
+            Matplotlib axes
+        """
+        ax.plot(self.distances, self.scan["score"], linewidth=0.8, color="k")
+        ax.set_xlabel("Distance (m)", fontsize=6)
+        ax.set_ylabel(
+            r"$-\log\left(\frac{1}{N}\sum (2\theta_g - 2\theta_c)^2\right)$", fontsize=6
+        )
+        ax.yaxis.get_offset_text().set_fontsize(6)
+        ax.tick_params(axis="x", labelsize=6)
+        ax.tick_params(axis="y", labelsize=6)
+        ax.set_title(
+            "Score vs Distance",
+            fontsize=6,
         )
 
-        self.comm.Barrier()
+    def plot_residual_distance_scan(self, ax):
+        """
+        Plot the residual scan over distance
 
-        self.scan = self.comm.gather(history, root=0)
+        Parameters
+        ----------
+        ax : plt.Axes
+            Matplotlib axes
+        """
+        ax.plot(self.distances, self.final_score, linewidth=0.8, color="k")
+        ax.scatter(
+            self.distances[self.index],
+            self.final_score[self.index],
+            color="red",
+            s=50,
+            marker="*",
+        )
+        ax.set_xlabel("Distance (m)", fontsize=6)
+        ax.set_ylabel(
+            r"$-\log\left(\frac{1}{N}\sum (2\theta_g - 2\theta_c)^2\right)$", fontsize=6
+        )
+        ax.yaxis.get_offset_text().set_fontsize(6)
+        ax.tick_params(axis="x", labelsize=6)
+        ax.tick_params(axis="y", labelsize=6)
+        ax.set_title(
+            "Penalized Score vs Distance",
+            fontsize=6,
+        )
 
-        if self.rank == 0:
-            best_dist = 0
-            best_score = 0
-            best_idx = 0 
-            for i in range(len(self.scan)):
-                scores = self.scan[i]["scores"]
-                j = np.argmax(scores)
-                if scores[j] > best_score:
-                    best_dist = i
-                    best_score = scores[j]
-                    best_idx = j
-            self.best_dist = best_dist
-            self.best_score = best_score
-            self.best_index = best_idx
-            filename = f"{self.exp}_r{self.run:04d}_params"
-            np.save(f"{out_dir}/{filename}.npy", self.scan[i]["params"])
-            print("Grid Search finished!")
+    def plot_intensity_hist(self, powder, Imin, ax):
+        """
+        Plot histogram of pixel intensities in the powder image
+
+        Parameters
+        ----------
+        powder : np.ndarray
+            Powder image
+        exp : str
+            Experiment name
+        run : int
+            Run number
+        Imin : float
+            Minimum intensity threshold for identifying Bragg peaks
+        ax : plt.Axes
+            Matplotlib axes
+        """
+        mean = np.mean(powder)
+        std_dev = np.std(powder)
+        nice_pix = powder[np.where(powder < mean + 2 * std_dev)]
+        _ = ax.hist(
+            nice_pix.ravel(),
+            bins=100,
+            color="skyblue",
+            edgecolor="black",
+            alpha=0.7,
+            label="Pixel Intensities",
+        )
+        ax.axvline(
+            mean,
+            color="red",
+            linestyle="--",
+            label=f"Mean ({mean:.2f})",
+        )
+        ax.axvline(
+            mean + std_dev,
+            color="orange",
+            linestyle="--",
+            label=f"Mean + Std Dev ({mean + std_dev:.2f})",
+        )
+        ax.axvline(
+            mean + 2 * std_dev,
+            color="green",
+            linestyle="--",
+            label=f"Mean + 2 Std Dev ({mean + 2 * std_dev:.2f})",
+        )
+        ax.axvline(
+            Imin,
+            color="purple",
+            linestyle=":",
+            linewidth=2,
+            label=f"Minimum Intensity ({Imin:.2f})",
+        )
+        ax.set_xlim([0, mean + 2 * std_dev])
+        ax.set_xlabel("Pixel Intensity", fontsize=6)
+        ax.set_ylabel("Frequency", fontsize=6)
+        ax.set_xticks([])
+        ax.set_xticklabels([])
+        ax.tick_params(axis="y", labelsize=4)
+        ax.set_title(
+            f"Histogram of Pixel Intensities \n for {self.exp} run {self.run}",
+            fontsize=6,
+        )
+        ax.legend(fontsize=6)
+
+    def plot_powder_and_resolution(self, ax=None):
+        """
+        Plot the powder image with calibrated overlapping 2θ rings.
+
+        Parameters
+        ----------
+        ax : plt.Axes, optional
+            Matplotlib axes
+        """
+        if ax is None:
+            _fig, ax = plt.subplots()
+
+        # Physical coordinates powder plot
+        p1, p2, _ = self.detector.calc_cartesian_positions()
+
+        ax.imshow(
+            self.assembled_powder,
+            extent=[p2.min(), p2.max(), p1.min(), p1.max()],
+            vmin=np.percentile(self.powder, 5),
+            vmax=np.percentile(self.powder, 95),
+        )
+
+        # Ring overlay
+        ai = _build_ai(self.detector, self.params, self.calibrant.wavelength)
+        tth = np.array(self.calibrant.get_2th())
+        ttha = ai.twoThetaArray().reshape(self.detector.calib_shape)
+        p1_3d = p1.reshape(self.detector.calib_shape)
+        p2_3d = p2.reshape(self.detector.calib_shape)
+        for m in range(self.detector.n_modules):
+            ax.contour(
+                p2_3d[m],
+                p1_3d[m],
+                ttha[m],
+                levels=tth,
+                cmap="autumn",
+                linewidths=1,
+                linestyles="dashed",
+            )
+
+        # Control points overlay
+        if self.gr.data is not None and len(self.gr.data) > 0:
+            d1_idx = self.gr.data[:, 0].astype(int)
+            d2_idx = self.gr.data[:, 1].astype(int)
+            rings = self.gr.data[:, 2].astype(int)
+            cp_x = p2[d1_idx, d2_idx]
+            cp_y = p1[d1_idx, d2_idx]
+            cmap = plt.get_cmap("tab10")
+            for ring_id in np.unique(rings):
+                mask = rings == ring_id
+                ax.scatter(
+                    cp_x[mask],
+                    cp_y[mask],
+                    s=10,
+                    color=cmap(ring_id % 10),
+                    alpha=0.6,
+                    label=f"Ring {ring_id}",
+                    zorder=3,
+                )
+            ax.legend(
+                fontsize=5,
+                markerscale=2,
+                title=f"N={len(self.gr.data)}",
+                title_fontsize=5,
+            )
+
+        # Resolution overlay
+        radii = ai.rArray()
+        q_array = ai.qArray() / 10  # nm⁻¹ → Å⁻¹
+
+        d1c, d2c = np.unravel_index(np.argmin(radii), p1.shape)
+        closest_resol = 2 * np.pi / q_array[d1c, d2c]
+        ax.text(
+            p2[d1c, d2c],
+            p1[d1c, d2c],
+            f"{closest_resol:.3f} Å",
+            color="red",
+            fontsize=10,
+            bbox=dict(facecolor="white", alpha=0.6, edgecolor="none", pad=1),
+        )
+
+        d1f, d2f = np.unravel_index(np.argmax(radii), p1.shape)
+        furthest_resol = 2 * np.pi / q_array[d1f, d2f]
+        ax.text(
+            p2[d1f, d2f],
+            p1[d1f, d2f],
+            f"{furthest_resol:.3f} Å",
+            color="red",
+            fontsize=10,
+            bbox=dict(facecolor="white", alpha=0.6, edgecolor="none", pad=1),
+        )
+
+        ax.set_xlabel("X-axis (m)", fontsize=8)
+        ax.set_ylabel("Y-axis (m)", fontsize=8)
+        ax.tick_params(axis="x", labelsize=6)
+        ax.tick_params(axis="y", labelsize=6)
+        ax.set_title(
+            f"Run {self.run} - {self.detector.detname} - {self.calibrant_name}",
+            fontsize=8,
+        )
+        ax.set_aspect("equal")
+
+    def create_interactive_powder(
+        self,
+    ):
+        """
+        Create an interactive powder image with calibrated overlapping 2θ rings.
+        """
+        p1, p2, _ = self.detector.calc_cartesian_positions()
+        # d1 = vertical (bottom→top), d2 = horizontal (left→right)
+        y = np.reshape(p1, self.detector.calib_shape)
+        x = np.reshape(p2, self.detector.calib_shape)
+        xmin, xmax = x.min(), x.max()
+        ymin, ymax = y.min(), y.max()
+
+        p = figure(
+            title=f"Run {self.run} - {self.detector.detname} - {self.calibrant_name}",
+            x_axis_label="X-axis (m)",
+            y_axis_label="Y-axis (m)",
+            width=1200,
+            height=1200,
+            match_aspect=True,
+            x_range=(xmin, xmax),
+            y_range=(ymin, ymax),
+        )
+
+        vmin, vmax = (
+            np.percentile(self.stacked_powder, 5),
+            np.percentile(self.stacked_powder, 95),
+        )
+        color_mapper = LinearColorMapper(palette=Viridis256, low=vmin, high=vmax)
+
+        p.image(
+            image=[self.assembled_powder[::-1, :]],
+            x=xmin,
+            y=ymin,
+            dw=(xmax - xmin),
+            dh=(ymax - ymin),
+            color_mapper=color_mapper,
+        )
+
+        ai = _build_ai(self.detector, self.params, self.calibrant.wavelength)
+        tth = np.array(self.calibrant.get_2th())
+        ttha = ai.twoThetaArray().reshape(self.detector.calib_shape)
+        for i in range(self.detector.n_modules):
+            p.contour(
+                x=x[i],
+                y=y[i],
+                z=ttha[i],
+                levels=tth,
+                line_color="red",
+                line_width=3,
+                line_dash="dashed",
+            )
+
+        if self.gr.data is not None and len(self.gr.data) > 0:
+            d1_idx = self.gr.data[:, 0].astype(int)
+            d2_idx = self.gr.data[:, 1].astype(int)
+            rings = self.gr.data[:, 2].astype(int)
+            cp_x = p2[d1_idx, d2_idx]
+            cp_y = p1[d1_idx, d2_idx]
+            n_rings = len(np.unique(rings))
+            palette = Category10[max(3, min(10, n_rings))]
+            for ring_id in np.unique(rings):
+                mask = rings == ring_id
+                p.circle(
+                    cp_x[mask].tolist(),
+                    cp_y[mask].tolist(),
+                    size=10,
+                    color=palette[ring_id % len(palette)],
+                    alpha=0.6,
+                    legend_label=f"Ring {ring_id}",
+                )
+            p.legend.title = f"Control points (N={len(self.gr.data)})"
+            p.legend.label_text_font_size = "8pt"
+            p.legend.click_policy = "hide"
+
+        radii = ai.rArray().reshape(self.detector.calib_shape)
+        q_array = ai.qArray().reshape(self.detector.calib_shape) / 10  # nm⁻¹ → Å⁻¹
+        closest_pixel_index = np.argmin(radii)
+        closest_pixel = (
+            x.flatten()[closest_pixel_index],
+            y.flatten()[closest_pixel_index],
+        )
+        closest_q = q_array.flatten()[closest_pixel_index]
+        closest_resol = 2 * np.pi / closest_q
+
+        furthest_pixel_index = np.argmax(radii)
+        furthest_pixel = (
+            x.flatten()[furthest_pixel_index],
+            y.flatten()[furthest_pixel_index],
+        )
+        furthest_q = q_array.flatten()[furthest_pixel_index]
+        furthest_resol = 2 * np.pi / furthest_q
+
+        pixel_lvls = np.array([closest_pixel, furthest_pixel])
+        resol_lvls = np.array([closest_resol, furthest_resol])
+        for pixel, resol in zip(pixel_lvls, resol_lvls):
+            label_annotation = Label(
+                x=pixel[0],
+                y=pixel[1],
+                text=f"{resol:.3f} Å",
+                text_color="red",
+                text_font_size="16pt",
+            )
+            p.add_layout(label_annotation)
+
+        hover = HoverTool(
+            tooltips=[
+                ("x", "@x{0.000}"),
+                ("y", "@y{0.000}"),
+                ("Intensity", "@intensity{0.0}"),
+            ]
+        )
+        p.add_tools(hover)
+        p.title.text_font_size = "12pt"
+        p.xaxis.axis_label_text_font_size = "10pt"
+        p.yaxis.axis_label_text_font_size = "10pt"
+        p.xaxis.major_label_text_font_size = "8pt"
+        p.yaxis.major_label_text_font_size = "8pt"
+
+        qs = {
+            "closest": closest_q,
+            "furthest": furthest_q,
+        }
+        resolutions = {
+            "closest": closest_resol,
+            "furthest": furthest_resol,
+        }
+        return p, qs, resolutions
+
+    def create_diagnostics_panel(
+        self,
+        plot="",
+    ):
+        """
+        Create a diagnostics panel with the results of the Bayesian Optimization.
+
+        Parameters
+        ----------
+        plot : str
+            Path to save plot
+        """
+        fig = plt.figure(figsize=(8, 9), dpi=100)
+        nrow, ncol = 3, 2
+
+        # (0,0) Summary text
+        ax1 = plt.subplot2grid((nrow, ncol), (0, 0))
+        rect = patches.Rectangle(
+            (0, 0),
+            1,
+            1,
+            transform=ax1.transAxes,
+            color="lightgrey",
+            alpha=0.3,
+        )
+        ax1.add_patch(rect)
+        ax1.text(
+            0.05,
+            0.9,
+            f"Experiment {self.exp}",
+            ha="left",
+            va="center",
+            fontsize=8,
+        )
+        ax1.text(0.05, 0.8, f"Run {self.run}", ha="left", va="center", fontsize=8)
+        ax1.text(
+            0.05,
+            0.7,
+            f"Detector {self.detector.detname}",
+            ha="left",
+            va="center",
+            fontsize=8,
+        )
+        ax1.text(
+            0.05,
+            0.6,
+            f"Calibrant {self.calibrant_name}",
+            ha="left",
+            va="center",
+            fontsize=8,
+        )
+        ax1.text(
+            0.05,
+            0.5,
+            f"Distance = {1000 * self.params[0]:.3f} ± {1000 * self.sigma[0]:.3f} mm",
+            ha="left",
+            va="center",
+            fontsize=8,
+        )
+        ax1.text(
+            0.05,
+            0.4,
+            f"X-shift = {1000 * self.params[1]:.3f} ± {1000 * self.sigma[1]:.3f} mm",
+            ha="left",
+            va="center",
+            fontsize=8,
+        )
+        ax1.text(
+            0.05,
+            0.3,
+            f"Y-shift = {1000 * self.params[2]:.3f} ± {1000 * self.sigma[2]:.3f} mm",
+            ha="left",
+            va="center",
+            fontsize=8,
+        )
+        ax1.text(
+            0.05,
+            0.2,
+            f"RotX = {self.params[3]:.3f} ± {self.sigma[3]:.6f} rad",
+            ha="left",
+            va="center",
+            fontsize=8,
+        )
+        ax1.text(
+            0.05,
+            0.1,
+            f"RotY = {self.params[4]:.3f} ± {self.sigma[4]:.6f} rad",
+            ha="left",
+            va="center",
+            fontsize=8,
+        )
+        ax1.axis("off")
+
+        # (0,1) Pixel histogram
+        ax2 = plt.subplot2grid((nrow, ncol), (0, 1))
+        self.plot_intensity_hist(self.powder, self.Imin, ax2)
+
+        # Compute 1D azimuthal integration via pyFAI
+        ai = _build_ai(self.detector, self.params, self.calibrant.wavelength)
+        result1d = ai.integrate1d(self.stacked_powder, npt=256, unit="q_A^-1")
+
+        # (1,0) 1D integration, spanning two cols
+        ax3 = plt.subplot2grid((nrow, ncol), (1, 0), colspan=2)
+        self.plot_radial_integration(result1d, self.calibrant, ax=ax3)
+
+        # (2,0) Score vs distance
+        ax4 = plt.subplot2grid((nrow, ncol), (2, 0))
+        self.plot_score_distance_scan(ax4)
+
+        # (2,1) Penalized score vs distance
+        ax5 = plt.subplot2grid((nrow, ncol), (2, 1))
+        self.plot_residual_distance_scan(ax5)
+
+        fig.tight_layout()
+
+        if plot != "":
+            fig.savefig(plot, dpi=100)
+        return fig
+
+    def create_summary_plot(
+        self,
+        plot="",
+    ):
+        """
+        Create a summary plot with the results of the Bayesian Optimization.
+
+        Parameters
+        ----------
+        plot : str
+            Path to save plot
+        """
+        fig = plt.figure(figsize=(9, 12), dpi=100)
+        nrow, ncol = 4, 3
+
+        # Labelling experiment and run number
+        ax1 = plt.subplot2grid((nrow, ncol), (0, 0))
+        rect = patches.Rectangle(
+            (0, 0),
+            1,
+            1,
+            transform=ax1.transAxes,
+            color="lightgrey",
+            alpha=0.3,
+        )
+        ax1.add_patch(rect)
+        ax1.text(
+            0.05,
+            0.9,
+            f"Experiment {self.exp}",
+            ha="left",
+            va="center",
+            fontsize=8,
+        )
+        ax1.text(0.05, 0.8, f"Run {self.run}", ha="left", va="center", fontsize=8)
+        ax1.text(
+            0.05,
+            0.7,
+            f"Detector {self.detector.detname}",
+            ha="left",
+            va="center",
+            fontsize=8,
+        )
+        ax1.text(
+            0.05,
+            0.6,
+            f"Calibrant {self.calibrant_name}",
+            ha="left",
+            va="center",
+            fontsize=8,
+        )
+        ax1.text(
+            0.05,
+            0.5,
+            f"Distance = {1000 * self.params[0]:.3f} ± {1000 * self.sigma[0]:.3f} mm",
+            ha="left",
+            va="center",
+            fontsize=8,
+        )
+        ax1.text(
+            0.05,
+            0.4,
+            f"ShiftX = {1000 * self.params[1]:.3f} ± {1000 * self.sigma[1]:.3f} mm",
+            ha="left",
+            va="center",
+            fontsize=8,
+        )
+        ax1.text(
+            0.05,
+            0.3,
+            f"ShiftY = {1000 * self.params[2]:.3f} ± {1000 * self.sigma[2]:.3f} mm",
+            ha="left",
+            va="center",
+            fontsize=8,
+        )
+        ax1.text(
+            0.05,
+            0.2,
+            f"RotX = {self.params[3]:.3f} ± {self.sigma[3]:.6f} rad",
+            ha="left",
+            va="center",
+            fontsize=8,
+        )
+        ax1.text(
+            0.05,
+            0.1,
+            f"RotY = {self.params[4]:.3f} ± {self.sigma[4]:.6f} rad",
+            ha="left",
+            va="center",
+            fontsize=8,
+        )
+        ax1.axis("off")
+
+        # Compute azimuthal integrations via pyFAI
+        ai = _build_ai(self.detector, self.params, self.calibrant.wavelength)
+        q_max = float(
+            (ai.qArray().reshape(self.detector.calib_shape) / 10).max()
+        )  # nm⁻¹ → Å⁻¹, detector-limited q maximum
+        result1d = ai.integrate1d(
+            self.stacked_powder, npt=256, unit="q_A^-1", radial_range=(0, q_max)
+        )
+        result2d = ai.integrate2d(
+            self.stacked_powder,
+            npt_rad=256,
+            npt_azim=360,
+            unit="q_A^-1",
+            radial_range=(0, q_max),
+        )
+
+        # (0,1) Pixel histogram, spanning two cols
+        ax2 = plt.subplot2grid((nrow, ncol), (0, 1), colspan=2)
+        self.plot_intensity_hist(self.powder, self.Imin, ax2)
+
+        # (1,0) Powder rings overlay, spanning two cols and two rows
+        ax3 = plt.subplot2grid((nrow, ncol), (1, 0), rowspan=2, colspan=2)
+        self.plot_powder_and_resolution(ax=ax3)
+
+        # (1,2) Score vs distance
+        ax4 = plt.subplot2grid((nrow, ncol), (1, 2))
+        self.plot_score_distance_scan(ax4)
+
+        # (2,2) Penalized score vs distance
+        ax5 = plt.subplot2grid((nrow, ncol), (2, 2))
+        self.plot_residual_distance_scan(ax5)
+
+        # (3,0) 1D integration, spanning two cols
+        ax6 = plt.subplot2grid((nrow, ncol), (3, 0), colspan=2)
+        self.plot_radial_integration(result1d, self.calibrant, ax=ax6)
+
+        # (3,2) 2D integration
+        ax7 = plt.subplot2grid((nrow, ncol), (3, 2))
+        self.plot_2d_integration(result2d, self.calibrant, ax7)
+
+        fig.tight_layout()
+
+        if plot != "":
+            fig.savefig(plot, dpi=100)
+        return fig

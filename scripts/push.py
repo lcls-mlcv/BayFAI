@@ -1,3 +1,13 @@
+"""Push a geometry file to the LCLS-II calibration database.
+
+Without ``--dbsuffix`` this simply delegates to
+``LCLSGeom.manager.push_to_database``, which is also what BayFAI itself uses.
+The local implementation below is kept only because LCLSGeom has no way to
+target a suffixed (e.g. test) database.
+
+Requires a psana2 environment and a valid kerberos ticket (``kinit``).
+"""
+
 import psana
 import psana.pscalib.calib.MDBUtils as mu  # type: ignore
 import psana.pscalib.calib.MDBWebUtils as wu  # type: ignore
@@ -6,6 +16,14 @@ cc = wu.cc
 import argparse
 
 def main(args):
+    if not args.dbsuffix:
+        # No suffix requested: use the shared implementation so there is a single
+        # code path for the default case.
+        from LCLSGeom.manager import push_to_database
+
+        push_to_database(args.experiment, args.run, args.detname, args.geometry)
+        return
+
     ds = psana.DataSource(exp=args.experiment, run=args.run)
     runs = next(ds.runs())
     detname = args.detname

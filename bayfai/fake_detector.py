@@ -10,8 +10,6 @@ else:
 
     IS_PSANA2 = False
 
-import sys
-sys.path.append("/sdf/home/l/lconreux/LCLSGeom_test/LCLSGeom")
 from LCLSGeom.manager import get_geometry, push_to_database
 from LCLSGeom.converter import PyFAIToPsana, PyFAIToCrystFEL, PsanaToPyFAI
 
@@ -46,7 +44,7 @@ class FakeDetector:
     calibrant : str
         Calibrant name (AgBh, LaB6, CeO2)
     powder_path : str
-        Path to the h5 file containing the powder data.
+        Path to the h5 or npy file containing the powder data.
     """
     def __init__(self, exp, run, detname, calibrant, powder_path):
         self.exp = exp
@@ -97,13 +95,15 @@ class FakeDetector:
         Parameters
         ----------
         powder_path : str
-            Path to the h5 file containing the powder data.
+            Path to the h5 or npy file containing the powder data.
 
         Returns
         -------
         powder : npt.NDArray[np.float64]
             The extracted powder image.
         """
+        if powder_path.endswith(".npy"):
+            return np.load(powder_path)
         with h5py.File(powder_path) as h5:
             if 'quad' in detname.lower():
                 detname = detname.replace('.', '')
@@ -146,7 +146,7 @@ class FakeDetector:
         Parameters
         ----------
         powder_path : str
-            Path to the h5 file containing the powder data.
+            Path to the h5 or npy file containing the powder data.
         detname : str
             Name of the detector.
         max_rings : int
@@ -247,9 +247,17 @@ class FakeDetector:
         detector : pyFAI.detectors.Detector
             The built PyFAI detector.
         """
+        # Deliberately called without exp/run: manual refinement always starts from
+        # the default metrology, so it is reproducible and independent of whatever
+        # geometry happens to be deployed for the run. Matches BayFAIOpt.build_detector.
         in_file = get_geometry(detname)
         detector = PsanaToPyFAI.convert(in_file, detname)
-        self.mask = detector.geo.get_pixel_mask(mbits=3)
+        mask = detector.geo.get_pixel_mask(mbits=3)
+        # Drop the leading singleton axis so the mask indexes per-module like the
+        # powder does, matching BayFAIOpt.generate_powder.
+        if mask.shape[0] == 1 and mask.ndim > 3:
+            mask = np.squeeze(mask, axis=0)
+        self.mask = mask
         return detector
 
     def define_calibrant(self, calibrant_name: str) -> pyFAI.calibrant.Calibrant:

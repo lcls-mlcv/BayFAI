@@ -1,7 +1,7 @@
 # BayFAI User Documentation
 
 <a name="toc"></a> **Jump to:**
-- [`Running BayFAI Benchmark`](#running-bayfai-benchmark)
+- [`Installation`](#installation)
 - [`Setting up BayFAI Manual Calibration notebook`](#setting-up-bayfai-notebook)
 - [`BayFAI Experiment Configuration`](#bayfai-configuration)
 - [`Running BayFAI Benchmark`](#running-bayfai-benchmark)
@@ -10,9 +10,33 @@
 - [`Running only BayFAI Geometry Calibration`](#running-only-bayfai-geometry-calibration)
 
 ---
-## Running BayFAI Benchmark 
+## Installation
 
-WORK IN PROGRESS
+BayFAI depends on `psana`, `PSCalib` and [`LCLSGeom`](https://github.com/slac-lcls/LCLSGeom), none of
+which are installable from PyPI. They are provided by the LCLS `psana` environments, and the
+maintained `LCLSGeom` checkout lives at `/sdf/group/lcls/ds/tools/LCLSGeom`.
+
+Rather than installing those by hand, use the provided script. It sources the right psana
+environment, installs `bayfai` in editable mode with `--no-deps` (so the curated env packages are
+not overwritten by PyPI wheels), and registers a Jupyter kernel that puts `LCLSGeom` on
+`PYTHONPATH` — the same mechanism `lute` uses for its BayFAI tasks.
+
+```bash
+git clone https://github.com/lcls-mlcv/BayFAI.git
+cd BayFAI
+./scripts/install.sh              # psana2 / LCLS-II (default)
+./scripts/install.sh --psana1     # psana1 / LCLS-I
+```
+
+This creates a kernel named `BayFAI (psana2)` (or `BayFAI (psana1)`).
+
+> **Note:** the `LCLSGeom` copy bundled inside the psana conda envs lags behind the one in
+> `/sdf/group`. The kernel deliberately prepends `/sdf/group/lcls/ds/tools/LCLSGeom/src` to
+> `PYTHONPATH` so the current API is used. If you set up an environment manually, do the same:
+> ```bash
+> source /sdf/group/lcls/ds/ana/sw/conda2/manage/bin/psconda.sh
+> export PYTHONPATH=/sdf/group/lcls/ds/tools/LCLSGeom/src:$PYTHONPATH
+> ```
 
 ## Setting up BayFAI Notebook
 
@@ -25,20 +49,22 @@ To set it up, follow these steps:
     (base) [lconreux@sdfiana002 results] git clone https://github.com/lcls-mlcv/BayFAI.git
     ```
 
-2. Build the package:
+2. Install the package and register the Jupyter kernel (see [Installation](#installation)):
     ```bash
     (base) [lconreux@sdfiana002 results] cd BayFAI
-    (base) [lconreux@sdfiana002 BayFAI] pip install -e .
+    (base) [lconreux@sdfiana002 BayFAI] ./scripts/install.sh
     ```
 
-3. Open an Ondemand session to open the jupyter notebook now!
-    
+3. Open an OnDemand session, open `notebooks/manual_calibration.ipynb`, and select the
+   **`BayFAI (psana2)`** kernel (or `BayFAI (psana1)` for LCLS-I detectors). The first cell fails
+   with a clear message if the kernel cannot import `bayfai` or `LCLSGeom`.
+
 4. To get started, you need to specify a few things for setting up the calibration:
     - experiment tag
     - run number
     - detector name (jungfrau, epix10k2M...)
     - calibrant name (AgBh, LaB6, CeO2...)
-    - powder_path (path to the hdf5 produced by `smalldata`)
+    - powder_path (path to the hdf5 produced by `smalldata`, or a `.npy` powder)
 
 5. Once the setup cell is run, iterate over changing:
     - Image settings
@@ -69,8 +95,13 @@ BayFAI is run within the newer version of `btx`, `lute` standing for LCLS Unifie
 
 A stable and up to date `lute` version with BayFAI can be found at [lute](https://github.com/slac-lcls/lute).
 On S3DF, a local `lute` clone can be found at `/sdf/group/lcls/ds/tools/lute/dev/lute`. 
-A development and test `BayFAI` version can be found in this repository under `BayFAI` directory. 
-On S3DF, a local `BayFAI` clone can be found at `/sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/BayFAI`.
+On S3DF, a local `BayFAI` clone can be found at `/sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/BayFAI`,
+and the development `lute` clone used by the benchmark at
+`/sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/lute`.
+
+The algorithm in `bayfai/optimization.py` is kept in sync with `lute`'s `lute/tasks/_bayfai.py`,
+which is what actually runs in production; the copy here differs only in using a plain stdlib logger
+so it can be imported standalone.
 
 ### Preliminaries `smalldata`
 
@@ -87,7 +118,7 @@ Once the experiment is ready to collect a geometry calibration run, and the user
     TW: this script requires the user to have an active kerberos authentification ticket to be able to populate the eLog. You can check if you have an active ticket by running `klist` in your terminal.
     If you don't have one, before running `setup_lute`, run `kinit` in your terminal and give your unix password.
     ```bash
-    (base) [lconreux@sdfiana002 ~] /sdf/group/lcls/ds/tools/lute/dev/lute/utilities/setup_lute -e <experiment> -f --directory=bayfai -W bayfai --test --nodes=1
+    (base) [lconreux@sdfiana002 ~] /sdf/group/lcls/ds/tools/lute/dev/lute/install/bin/setup_lute -e <experiment> -f --directory=bayfai -W bayfai --test --nodes=1
     ```
     ___Nota Bene___: The script will prompt you three times (for partition, account, and number of tasks). Simply press Enter each time to accept the default settings.
 
@@ -137,9 +168,57 @@ Once the experiment is ready to collect a geometry calibration run, and the user
                 detname: "jungfrau"         # Fill this line with detector name (epix10k2M, jungfrau...)
             ```
 
+       All remaining keys are optional and fall back to the defaults in `lute`'s `BayFAIParameters`
+       model. The starting metrology is no longer configured here: it is fetched automatically by
+       `LCLSGeom.manager.get_geometry(detname)`, so there is no `in_file` key.
+
+            ```
+            BayFAI:
+                h5: ""                      # smalldata h5 (or .npy) powder; auto-resolved if empty
+                out_file: ""                # defaults to <work_dir>/geom/<run>-end.data
+                wavelength: 1.0e-10         # only set to override the value read from the h5
+                bounds:                     # search half-width around `center`
+                  dist: [-0.05, 0.05]
+                  poni1: [-0.005, 0.005]
+                  poni2: [-0.005, 0.005]
+                  rot1: [-0.1, 0.1]
+                  rot2: [-0.1, 0.1]
+                  rot3: [-0.1, 0.1]
+                resolutions:                # grid step per parameter
+                  dist: 0.001
+                  poni1: 0.0001
+                  poni2: 0.0001
+                  rot1: 0.02
+                  rot2: 0.02
+                  rot3: 0.02
+                bayfai_params:
+                  n_samples: 20             # initial GP samples
+                  n_iterations: 80          # Bayesian optimization iterations
+                  max_rings: 6              # rings used for scoring
+                  pts_per_deg: 0.5          # control points per azimuthal degree
+                  Imin: 95                  # intensity percentile for peak detection
+                  prior: true               # sample around `center` rather than uniformly
+                  beta: 1.96                # UCB exploration/exploitation trade-off
+                  step: 5                   # refinement box half-width, in grid steps
+                  lbda: 0.1                 # uncertainty penalty in winner selection
+                  seed: null                # set an int for reproducibility
+            ```
+
+       > **Note:** the hyperparameter block is named `bayfai_params`. It was called `bo_params` in
+       > older versions of `lute`; that key is no longer recognised.
+
 ## Running BayFAI benchmark
 
-Calibration runs were collected to constitute a benchmark to test different versions of BayFAI. Those calibration powder images can be found under the `benchmark` folder in this repository.
+Calibration runs were collected to constitute a benchmark to test different versions of BayFAI. The
+reference configs live in `benchmark/yamls/<hutch>/` and the reference geometries in
+`benchmark/geom/`.
+
+The configs point at the `smalldata` HDF5 powders in
+`/sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/powder/`, rather than the assembled
+`.npy` copies also shipped in `benchmark/powder/`. Both are readable by BayFAI, but only the HDF5
+files carry the per-run photon energy, from which the wavelength is derived — a `.npy` would silently
+fall back to a default 1 Å and produce a meaningless calibration. Where a run's HDF5 has no usable
+photon energy, its config sets `wavelength` explicitly.
 
 If you would like to run the whole benchmark test, follow these steps:
 
@@ -156,13 +235,25 @@ If you would like to run the whole benchmark test, follow these steps:
 
 3. Run the hutch benchmark of your choice:
     ```bash
-    (base) [lconreux@sdfiana002 launchpad] python ../BayFAI/scripts/run_benchmark.py --hutch=<hutch> (cxi, mec, mfx_psana1, mfx_psana2)
+    (base) [lconreux@sdfiana002 launchpad] python ../BayFAI/scripts/run_benchmark.py --hutch=<hutch>   # cxi, mec, mfx_psana1, mfx_psana2
     ```
+    Add `--dry-run` to generate the configs and print the submission commands without submitting.
 
 __Nota Bene__
-- This will create a `results` folder in your working directory with inside the final optimization plots under `figs` as well as the geometry found in `geom`.
-- The `lute` logs can be found in your `launchpad` folder. Here, the default BayFAI development `lute` is used to run the benchmark. This `lute` clone can be found at `/sdf/data/lcls/ds/prj/prjlute22/results/geom_opt/lute`.
-- You are welcome to try different set of hyperparameters by adding extra keys to the command (`--n_samples`, `--n_iterations`, `--max_rings`...)
+- Everything generated lands in `results/test_<hutch>_<timestamp>/` in your working directory:
+  the configs actually submitted under `configs/`, the final optimization plots under `figs/`, and
+  the geometries under `geom/<experiment>/`. The configs tracked in git are never modified.
+- The script locates `benchmark/yamls` relative to its own location, so it can be run from any
+  working directory.
+- The `lute` logs can be found in your `launchpad` folder. Here, the default BayFAI development
+  `lute` is used to run the benchmark. This `lute` clone can be found at
+  `/sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/lute`, and can be overridden with
+  `--lute`.
+- Hyperparameters can be overridden on the command line; anything you do not pass keeps the value
+  committed in the reference config. Available: `--n_samples`, `--n_iterations`, `--max_rings`,
+  `--pts_per_deg`, `--Imin`, `--beta`, `--step`, `--lbda`, `--seed`, `--no-prior`.
+- Submission settings can be overridden too: `--partition`, `--account`, `--ntasks`. The number of
+  tasks sets how many candidate detector distances are scanned in parallel (one per MPI rank).
 
 
 ## Running BayFAI from the Command-Line

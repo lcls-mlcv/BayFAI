@@ -7,7 +7,7 @@ title: LUTE Task Configuration
 work_dir: ../tests/v2/test_mec_1
 ---
 BayFAI:
-  bo_params:
+  bayfai_params:
     max_rings: 20
     n_iterations: 80
     n_samples: 20
@@ -24,10 +24,7 @@ BayFAI:
   fixed:
   - rot2
   - rot3
-  in_file: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/BayFAI/benchmark/geom/mecl1048423/0-end_Q3.data
-  out_file: ../tests/v2/test_mec_1/geom/mecl1048423/170-end_Q3.data
-  powder: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/powder/mecl1048423_Run0170.h5
-  preprocess: false
+  h5: /sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/powder/mecl1048423_Run0170.h5
   resolutions:
     dist: 0.0001
     poni1: 0.0001

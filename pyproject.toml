@@ -4,11 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "bayfai"
-version = "0.1.0"
+version = "0.2.0"
 authors = [{ name = "Louis Conreux" }]
 description = "Automated Geometry Calibration for X-ray Detector"
 readme = "README.md"
 requires-python = ">=3.9"
+# NOTE: LCLSGeom, psana and PSCalib are deliberately NOT listed here. They are
+# not available on PyPI and are supplied by the psana environment; LCLSGeom is
+# picked up from /sdf/group/lcls/ds/tools/LCLSGeom/src via PYTHONPATH. Use
+# ./scripts/install.sh, which installs with --no-deps against a psana env.
 dependencies = [
     "numpy>=1.20.0",
     "matplotlib>=3.4.0",
@@ -17,7 +21,10 @@ dependencies = [
     "scipy>=1.7.0",
     "h5py>=3.0.0",
     "panel>=0.14.0",
-    "tqdm>=4.60.0"
+    "bokeh>=2.4.0",
+    "mpi4py>=3.0.0",
+    "ipywidgets>=7.6.0",
+    "PyYAML>=5.4.0"
 ]
 
 classifiers = [

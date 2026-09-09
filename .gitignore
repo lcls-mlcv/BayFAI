@@ -44,6 +44,9 @@ dist/
 *.bak
 *.swp
 *.swo
-*.png
 events.out*
 results/
+
+# Generated plots, but keep the documentation screenshots
+*.png
+!images/*.png

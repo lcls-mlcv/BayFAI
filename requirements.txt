@@ -1,3 +1,8 @@
+# These are the pip-installable dependencies only.
+#
+# LCLSGeom, psana and PSCalib are NOT on PyPI. They come from the psana
+# environment (LCLSGeom via PYTHONPATH from /sdf/group/lcls/ds/tools/LCLSGeom/src).
+# Prefer ./scripts/install.sh over installing from this file directly.
 numpy>=1.20.0
 matplotlib>=3.4.0
 pyFAI>=0.20.0
@@ -5,4 +10,7 @@ scikit-learn>=1.0.0
 scipy>=1.7.0
 h5py>=3.0.0
 panel>=0.14.0
-tqdm>=4.60.0
+bokeh>=2.4.0
+mpi4py>=3.0.0
+ipywidgets>=7.6.0
+PyYAML>=5.4.0

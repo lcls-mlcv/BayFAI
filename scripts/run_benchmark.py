@@ -1,106 +1,169 @@
-import os
-import subprocess
-from pathlib import Path
-from datetime import datetime
-import yaml
-import argparse
+"""Submit the BayFAI benchmark suite for a given hutch through LUTE.
 
-def submit_task(executable, yaml_file, task, ncores, partition, account, exp=None, run=None, psana2=False):
-    """
-    Construct the SLURM command to submit the job
-    """
-    command = f'{executable}'
-    command += f' -t {task}'
-    command += f' -c {yaml_file}'
+Reads the reference configs shipped in ``benchmark/yamls/<hutch>/``, applies any
+hyperparameter overrides given on the command line, writes the resulting configs
+into the timestamped results folder, and submits one SLURM job per config.
+
+The configs tracked in git are never modified: everything generated lands under
+``<work_dir>/results/test_<hutch>_<timestamp>/``.
+
+Usage
+-----
+    python scripts/run_benchmark.py --hutch cxi
+    python scripts/run_benchmark.py --hutch mec --n_iterations 120 --dry-run
+"""
+
+import argparse
+import subprocess
+from datetime import datetime
+from pathlib import Path
+
+import yaml
+
+REPO_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_LUTE = Path(
+    "/sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/lute"
+)
+HUTCHES = ["cxi", "mec", "mfx_psana1", "mfx_psana2"]
+
+# Hyperparameters that live under the BayFAI.bayfai_params block. Only the ones
+# actually supplied on the command line are written, so the values committed in
+# the reference configs stay in force otherwise.
+HYPERPARAMETERS = (
+    "n_samples",
+    "n_iterations",
+    "max_rings",
+    "pts_per_deg",
+    "Imin",
+    "beta",
+    "step",
+    "lbda",
+)
+
+
+def submit_task(
+    executable,
+    yaml_file,
+    task,
+    ncores,
+    partition,
+    account,
+    exp=None,
+    run=None,
+    psana2=False,
+):
+    """Construct the SLURM command to submit the job."""
+    command = f"{executable}"
+    command += f" -t {task}"
+    command += f" -c {yaml_file}"
     if exp is not None:
-        command += f' -e {exp}'
-        command += f' -r {run}'
+        command += f" -e {exp}"
+        command += f" -r {run}"
     if psana2:
-        command += f' --psana2'
-    command += f' --ntasks={ncores}'
-    command += ' --nodes=1'
-    command += f' --partition={partition}'
-    command += f' --account={account}'
+        command += " --psana2"
+    command += f" --ntasks={ncores}"
+    command += " --nodes=1"
+    command += f" --partition={partition}"
+    command += f" --account={account}"
     return command
 
-def main(args):
-    
-    # Parse arguments
-    hutch = args.hutch
-    n_samples = args.n_samples
-    n_iterations = args.n_iterations
-    max_rings = args.max_rings
-    prior = args.prior
-    beta = args.beta
-    step = args.step
-    seed = args.seed
-    smooth = args.smooth
 
-    # Set up directories
-    work_dir = Path.cwd()
-    yaml_folder = Path(f"../BayFAI/benchmark/yamls/{hutch}")
-    powder_folder = Path(f"../BayFAI/benchmark/powder")
-    results_folder = work_dir / "results"
-    datetime_str = datetime.now().strftime("%Y%m%d_%H%M%S")
-    test_folder_name = f"test_{hutch}_{datetime_str}"
-    test_folder = results_folder / test_folder_name
-    test_folder.mkdir(parents=True, exist_ok=True)
+def build_config(config_path, args, test_folder):
+    """Load a reference config and return (config docs, exp, run, detname)."""
+    with open(config_path, "r") as f:
+        docs = list(yaml.safe_load_all(f))
 
-    # Modify YAML files
-    yamls = yaml_folder.glob("*.yaml")
-    for config_path in yamls:
-        with open(config_path, "r") as f:
-            config = list(yaml.safe_load_all(f))
-        for doc in config:
-            keys = doc.keys()
-            if 'work_dir' in keys:
-                doc['work_dir'] = str(test_folder)
-            if 'experiment' in keys:
-                exp = doc['experiment']
-            if 'run' in keys:
-                run = doc['run']
-            geom_folder = test_folder / "geom" / f"{exp}"
-            geom_folder.mkdir(parents=True, exist_ok=True)
-            fig_folder = test_folder / "figs"
-            fig_folder.mkdir(parents=True, exist_ok=True)
-            if 'BayFAI' in keys:
-                doc['BayFAI'].setdefault('bo_params', {})
-                if hutch != 'mfx_psana2':
-                    in_file = doc['BayFAI']['in_file']
-                if hutch == 'mec':
-                    quad = os.path.basename(in_file).split('.')[0][-1]
-                    doc['BayFAI']['out_file'] = f"{geom_folder}/{run}-end_Q{quad}.data"
-                else:
-                    doc['BayFAI']['out_file'] = f"{geom_folder}/{run}-end.data"
-                doc['BayFAI']['powder'] = f"{powder_folder}/{exp}_Run{run:0>4}.npy"
-                doc['BayFAI']['preprocess'] = smooth
-                doc['BayFAI']['bo_params']['n_samples'] = n_samples
-                doc['BayFAI']['bo_params']['n_iterations'] = n_iterations
-                doc['BayFAI']['bo_params']['max_rings'] = max_rings
-                doc['BayFAI']['bo_params']['prior'] = prior
-                doc['BayFAI']['bo_params']['beta'] = beta
-                doc['BayFAI']['bo_params']['step'] = step
-                if seed==0:
-                    doc['BayFAI']['bo_params']['seed'] = None
-                else:
-                    doc['BayFAI']['bo_params']['seed'] = seed
+    exp = run = detname = None
+    for doc in docs:
+        if not doc:
+            continue
+        if "experiment" in doc:
+            exp = doc["experiment"]
+        if "run" in doc:
+            run = int(doc["run"])
+        if "work_dir" in doc:
+            doc["work_dir"] = str(test_folder)
 
-        with open(config_path, "w") as f:
-            yaml.safe_dump_all(config, f)
+    for doc in docs:
+        if not doc or "BayFAI" not in doc:
+            continue
+        bayfai = doc["BayFAI"]
+        detname = bayfai["detname"]
 
-        # Submit SLURM jobs
-        executable = "/sdf/data/lcls/ds/prj/prjlute22/results/benchmarks/geom_opt/lute/launch_scripts/submit_slurm.sh"
-        if hutch=='mfx_psana2':
-            task = "BayFAIOptimizer2"
-            psana2 = True
+        # `h5` is intentionally left as committed in the reference config. It points at
+        # the smalldata HDF5 powder, which carries the per-run photon energy; swapping in
+        # the assembled .npy copy would silently fall back to a default 1 A wavelength.
+
+        # MEC runs four ePix10ka quads per run, so the per-run default that LUTE
+        # would derive ({work_dir}/geom/{run}-end.data) would have all four
+        # overwrite each other. Key the output on the detector instead.
+        geom_folder = test_folder / "geom" / f"{exp}"
+        geom_folder.mkdir(parents=True, exist_ok=True)
+        if detname.lower().startswith("epix10kaquad"):
+            quad = detname[-1]
+            bayfai["out_file"] = str(geom_folder / f"{run}-end_Q{quad}.data")
         else:
-            task = "BayFAIOptimizer"
-            psana2 = False
-        ncores = 120
-        partition = "milano"
-        account = "lcls:prjlute22"
+            bayfai["out_file"] = str(geom_folder / f"{run}-end.data")
 
-        cmd = submit_task(executable, config_path, task, ncores, partition, account, exp, run, psana2)
+        params = bayfai.setdefault("bayfai_params", {})
+        for key in HYPERPARAMETERS:
+            value = getattr(args, key)
+            if value is not None:
+                params[key] = value
+        if args.prior is not None:
+            params["prior"] = args.prior
+        if args.seed is not None:
+            params["seed"] = None if args.seed == 0 else args.seed
+
+    if exp is None or run is None:
+        raise ValueError(f"{config_path} is missing 'experiment' and/or 'run'")
+    return docs, exp, run, detname
+
+
+def main(args):
+    yaml_folder = REPO_ROOT / "benchmark" / "yamls" / args.hutch
+    if not yaml_folder.is_dir():
+        raise SystemExit(f"No benchmark configs for hutch '{args.hutch}' in {yaml_folder}")
+
+    datetime_str = datetime.now().strftime("%Y%m%d_%H%M%S")
+    test_folder = Path.cwd() / "results" / f"test_{args.hutch}_{datetime_str}"
+    config_folder = test_folder / "configs"
+    config_folder.mkdir(parents=True, exist_ok=True)
+    (test_folder / "figs").mkdir(parents=True, exist_ok=True)
+
+    if args.hutch == "mfx_psana2":
+        task, psana2 = "BayFAIOptimizer2", True
+    else:
+        task, psana2 = "BayFAIOptimizer", False
+    executable = Path(args.lute) / "launch_scripts" / "submit_slurm.sh"
+
+    configs = sorted(yaml_folder.glob("*.yaml"))
+    if not configs:
+        raise SystemExit(f"No .yaml files found in {yaml_folder}")
+    print(f"Submitting {len(configs)} {args.hutch} benchmark configs -> {test_folder}")
+
+    for config_path in configs:
+        docs, exp, run, _ = build_config(config_path, args, test_folder)
+
+        out_config = config_folder / config_path.name
+        with open(out_config, "w") as f:
+            yaml.safe_dump_all(docs, f, default_flow_style=False, sort_keys=True)
+
+        cmd = submit_task(
+            executable,
+            out_config,
+            task,
+            args.ntasks,
+            args.partition,
+            args.account,
+            exp,
+            run,
+            psana2,
+        )
+
+        if args.dry_run:
+            print(cmd)
+            continue
 
         try:
             result = subprocess.run(
@@ -109,36 +172,88 @@ def main(args):
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
-                text=True
+                text=True,
             )
-
-            print("SLURM job submitted successfully!")
-            print("Standard Output:", result.stdout)
-            print("Standard Error:", result.stderr)
-
+            print(f"Submitted {config_path.name}: {result.stdout.strip()}")
+            if result.stderr.strip():
+                print("Standard Error:", result.stderr.strip())
         except subprocess.CalledProcessError as e:
-            # Handle errors in the subprocess call
-            print(f"Error occurred while submitting SLURM job: {e}")
-            print("Return Code:", e.returncode)
+            print(f"Error submitting {config_path.name}: return code {e.returncode}")
             print("Error Output:", e.stderr)
-        
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Choosing which benchmarks to run")
+    parser = argparse.ArgumentParser(description="Run the BayFAI benchmark suite")
 
-    # Required arguments
-    parser.add_argument("--hutch", type=str, help="Hutch to run benchmarks")
+    parser.add_argument(
+        "--hutch",
+        type=str,
+        required=True,
+        choices=HUTCHES,
+        help="Which hutch benchmark to run",
+    )
 
-    # Hyperparameters for BayFAI
-    parser.add_argument("--n_samples", type=int, default=20, help="Number of initial samples to draw")
-    parser.add_argument("--n_iterations", type=int, default=80, help="Number of Bayesian optimization iterations")
-    parser.add_argument("--max_rings", type=int, default=8, help="Max number of rings to consider")
-    parser.add_argument("--prior", action="store_false", help="Flag to draw initial samples at random or from a gaussian prior defined by the center parameter")
-    parser.add_argument("--beta", type=float, default=1.96, help="Exploration-exploitation trade-off parameter for UCB acquisition function")
-    parser.add_argument("--step", type=int, default=5, help="Number of grid steps to refine around the BO best parameter for the gradient descent search")
-    parser.add_argument("--smooth", action="store_true", help="Flag to smooth powder image or not")
+    # BayFAI hyperparameters. Default None means "leave the config's value alone".
+    parser.add_argument("--n_samples", type=int, default=None, help="Initial GP samples")
+    parser.add_argument(
+        "--n_iterations", type=int, default=None, help="Bayesian optimization iterations"
+    )
+    parser.add_argument(
+        "--max_rings", type=int, default=None, help="Maximum number of rings to score"
+    )
+    parser.add_argument(
+        "--pts_per_deg",
+        type=float,
+        default=None,
+        help="Control points extracted per azimuthal degree",
+    )
+    parser.add_argument(
+        "--Imin",
+        type=float,
+        default=None,
+        help="Intensity percentile threshold for Bragg peak detection",
+    )
+    parser.add_argument(
+        "--beta", type=float, default=None, help="UCB exploration-exploitation trade-off"
+    )
+    parser.add_argument(
+        "--step", type=int, default=None, help="Refinement box half-width, in grid steps"
+    )
+    parser.add_argument(
+        "--lbda",
+        type=float,
+        default=None,
+        help="Uncertainty penalty weight in winner selection",
+    )
+    parser.add_argument(
+        "--no-prior",
+        dest="prior",
+        action="store_false",
+        default=None,
+        help="Draw initial samples uniformly at random instead of from a Gaussian prior",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for reproducibility (0 means no seed)",
+    )
 
-    # Reproducibility
-    parser.add_argument("--seed", type=int, default=0, help="Random seed for reproducibility")
-    
-    args = parser.parse_args()
-    main(args)
+    # Submission settings.
+    parser.add_argument(
+        "--lute", type=str, default=str(DEFAULT_LUTE), help="Path to the LUTE clone to use"
+    )
+    parser.add_argument("--partition", type=str, default="milano", help="SLURM partition")
+    parser.add_argument(
+        "--account", type=str, default="lcls:prjlute22", help="SLURM account"
+    )
+    parser.add_argument(
+        "--ntasks", type=int, default=120, help="MPI ranks per job (distances scanned)"
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Write the configs and print the submission commands without submitting",
+    )
+
+    main(parser.parse_args())
