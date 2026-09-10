@@ -53,7 +53,7 @@ class FakeDetector:
         self.calibrant_name = calibrant
         self.params = [0.1, 0.0, 0.0, 0.0, 0.0, 0.0]
         self.min_rings = 1
-        self.max_rings = 10 
+        self.max_rings = 10
         if IS_PSANA2:
             self.ds = DataSource(exp=exp, run=run, skip_calib_load="all", max_events=1)
             self.runs = next(self.ds.runs())
@@ -247,14 +247,9 @@ class FakeDetector:
         detector : pyFAI.detectors.Detector
             The built PyFAI detector.
         """
-        # Deliberately called without exp/run: manual refinement always starts from
-        # the default metrology, so it is reproducible and independent of whatever
-        # geometry happens to be deployed for the run. Matches BayFAIOpt.build_detector.
         in_file = get_geometry(detname)
         detector = PsanaToPyFAI.convert(in_file, detname)
         mask = detector.geo.get_pixel_mask(mbits=3)
-        # Drop the leading singleton axis so the mask indexes per-module like the
-        # powder does, matching BayFAIOpt.generate_powder.
         if mask.shape[0] == 1 and mask.ndim > 3:
             mask = np.squeeze(mask, axis=0)
         self.mask = mask
@@ -294,18 +289,21 @@ class FakeDetector:
         self.tth = np.array(calibrant.get_2th())
         return calibrant
 
-    def azimuthal_integration(self) -> tuple:
+    def azimuthal_integration(self, n_bins: int = 256) -> tuple:
         """
-        Compute the radial intensity profile of an image.
+        Compute the radial intensity profile of the powder image.
 
         Parameters
         ----------
-        powder : numpy.ndarray, shape (n,m)
-            detector image
-        detector : pyFAI.Detector, shape (n,m)
-            PyFAI detector object
-        params : list, optional
-            6 Geometry parameters: distance, x-shift, y-shift, Rx, Ry, Rz
+        n_bins : int, optional
+            Number of radial bins.
+
+        Returns
+        -------
+        q : numpy.ndarray
+            Radial axis in q (A^-1), of length ``n_bins``.
+        I : numpy.ndarray
+            Azimuthally averaged intensity, of length ``n_bins``.
         """
         if self.params is not None:
             ai = AzimuthalIntegrator(
@@ -325,21 +323,23 @@ class FakeDetector:
             )
         q, I = ai.integrate1d(
             self.stacked_powder,
-            npt=256,
+            npt=n_bins,
             unit="q_A^-1",
             method="cython")
         return q, I
 
-    def integrate_detector(self):
+    def integrate_detector(self, n_bins: int = 256):
         """
         Integrate azimuthally powder diffraction rings based on the geometry and overlay expected diffraction rings.
 
+        The geometry used is the current ``self.params``.
+
         Parameters
         ----------
-        params:
-            6 Geometry parameters: distance, x-shift, y-shift, Rx, Ry, Rz
+        n_bins : int, optional
+            Number of radial bins.
         """
-        q, I = self.azimuthal_integration()
+        q, I = self.azimuthal_integration(n_bins=n_bins)
 
         fig, ax = plt.subplots(figsize=(10, 4)) 
         unit = RADIAL_UNITS["q_A^-1"]
@@ -357,7 +357,7 @@ class FakeDetector:
                 )
                 ax.add_line(line)
 
-        ax.set_title("Radial Profile")
+        ax.set_title(f"Radial Profile ({n_bins} bins)")
         if unit:
             ax.set_xlabel(unit.label)
         ax.set_ylabel("Intensity")

@@ -82,6 +82,12 @@ To set it up, follow these steps:
 
 6. Once you are happy with the base geometry, you can:
     - Azimuthally integrate the detector to check for alignment by calling `fitter.integrate_detector()`
+
+      The radial profile uses 256 bins by default. On large detectors that can smear closely-spaced
+      rings, so pass a finer binning when you need to resolve them:
+      ```python
+      fitter.integrate_detector(n_bins=1000)
+      ```
     - Further refine the geometry using PyFAI gradient descent by calling `fitter.refine_geometry()`
     - Iterate again if needed.
 

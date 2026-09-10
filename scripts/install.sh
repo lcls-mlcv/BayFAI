@@ -20,7 +20,7 @@ PSCONDA1="/sdf/group/lcls/ds/ana/sw/conda1/manage/bin/psconda.sh"
 PSCONDA2="/sdf/group/lcls/ds/ana/sw/conda2/manage/bin/psconda.sh"
 
 PSANA_VERSION=2
-KERNEL_NAME="BayFAI"
+KERNEL_NAME=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -38,6 +38,44 @@ else
     PSCONDA="$PSCONDA2"
 fi
 
+# The default name encodes the psana version. Without this, installing psana1 after
+# psana2 (or vice versa) silently overwrites the other one's kernel, because both
+# resolve to the same kernelspec id -- leaving a kernel whose display name says one
+# psana version while its interpreter is the other's.
+if [[ -z "$KERNEL_NAME" ]]; then
+    KERNEL_NAME="BayFAI-psana$PSANA_VERSION"
+fi
+
+# Refuse to silently repurpose a kernel that was built for the other psana version.
+EXISTING_JSON="$(python3 - "$KERNEL_NAME" <<'PYFIND' 2>/dev/null || true
+import os, sys
+name = sys.argv[1].lower()
+for root in (
+    os.path.expanduser("~/.local/share/jupyter/kernels"),
+    os.path.expanduser("~/Library/Jupyter/kernels"),
+):
+    path = os.path.join(root, name, "kernel.json")
+    if os.path.exists(path):
+        print(path)
+        break
+PYFIND
+)"
+if [[ -n "$EXISTING_JSON" ]]; then
+    OTHER="$(python3 -c "
+import json,sys
+spec=json.load(open(sys.argv[1]))
+argv0=spec.get('argv',[''])[0]
+print('1' if '/conda1/' in argv0 else ('2' if '/conda2/' in argv0 else '?'))
+" "$EXISTING_JSON")"
+    if [[ "$OTHER" != "?" && "$OTHER" != "$PSANA_VERSION" ]]; then
+        echo "ERROR: kernel '$KERNEL_NAME' already exists and points at psana$OTHER." >&2
+        echo "       Overwriting it would break your psana$OTHER setup." >&2
+        echo "       Use a distinct --name, or remove it first:" >&2
+        echo "           jupyter kernelspec remove ${KERNEL_NAME,,}" >&2
+        exit 1
+    fi
+fi
+
 if [[ ! -f "$PSCONDA" ]]; then
     echo "ERROR: cannot find psana setup script at $PSCONDA" >&2
     exit 1
@@ -48,6 +86,24 @@ if [[ ! -d "$LCLSGEOM_SRC" ]]; then
 fi
 
 echo ">>> Sourcing psana$PSANA_VERSION environment"
+# Start from a clean slate so the kernel records only what psconda.sh itself sets.
+# Otherwise anything already in the calling shell gets baked into the kernelspec:
+# PYTHONPATH may carry a lute install tree or the other psana release, and a login
+# profile that sources conda2 leaves TESTRELDIR/EPICS_BASE pointing at psana2 even
+# during a --psana1 install (conda1's psconda.sh never sets TESTRELDIR, so an
+# inherited one would survive and aim the psana1 kernel at a psana2 release).
+if [[ -n "${PYTHONPATH:-}" ]]; then
+    echo "    ignoring inherited PYTHONPATH: ${PYTHONPATH}"
+fi
+unset PYTHONPATH
+for _var in SIT_ROOT SIT_ARCH SIT_DATA SIT_PSDM_DATA TESTRELDIR EPICS_BASE \
+            PYEPICS_LIBCA HDF5_USE_FILE_LOCKING OPENBLAS_NUM_THREADS; do
+    if [[ -n "${!_var:-}" ]]; then
+        echo "    ignoring inherited $_var=${!_var}"
+    fi
+    unset "$_var"
+done
+unset _var
 # psconda.sh is not written for `set -u`.
 set +u
 # shellcheck disable=SC1090
@@ -139,6 +195,33 @@ with open(path, "w") as f:
 print(f"    patched {path}")
 print(f"    carried psana vars: {', '.join(carried)}")
 PYPATCH
+
+# A JupyterLab extension that is incompatible with the env's JupyterLab can abort
+# frontend plugin resolution, leaving the ipywidgets manager unregistered -- which
+# surfaces in the notebook as "Error displaying widget: model not found" rather
+# than as anything mentioning the actual culprit. Surface it here instead.
+# Report only: an installer should not silently rewrite user-global Jupyter config.
+echo ">>> Checking JupyterLab extensions"
+BROKEN="$(jupyter labextension list 2>&1 | grep -E '\bdisabled\b|X' \
+          | grep -vE '^\s*$' | sed -E 's/\x1b\[[0-9;]*m//g' \
+          | awk '$0 ~ /X/ && $0 !~ /disabled/ {print $1}' | sort -u || true)"
+
+if [[ -z "$BROKEN" ]]; then
+    echo "    no incompatible extensions detected"
+else
+    echo ""
+    echo "    WARNING: these JupyterLab extensions are incompatible with this env's JupyterLab."
+    echo "    They can break ipywidgets rendering ('model not found') even though ipywidgets itself"
+    echo "    is installed correctly. Disable them for your account (reversible, does not touch the"
+    echo "    shared env), then restart your OnDemand session:"
+    echo ""
+    for ext in $BROKEN; do
+        echo "        jupyter labextension disable $ext --level=user"
+    done
+    echo ""
+    echo "    Undo with: jupyter labextension enable <name> --level=user"
+    echo ""
+fi
 
 cat <<EOF
 
